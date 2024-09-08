@@ -33,7 +33,6 @@ const SPISettings spiSettings = SPISettings(SPI_CLOCK_DIV4, MSBFIRST, SPI_MODE0)
 MFRC522DriverSPI spi_driver{ss_pin, spi_2, spiSettings};
 MFRC522 mfrc522{spi_driver};
 
-
 // ESP8266Audio
 #define AUDIO_SOURCE_BUFFER_SIZE 4096
 AudioFileSourceSD *source_sd = NULL;
@@ -135,10 +134,16 @@ void loop() {
 
   if(play_flag) {
     if (mp3->isRunning()) {
+      unsigned long t = millis();
       if(!mp3->loop()) {
         Serial.println("mp3->stop();");
         mp3->stop();
       }
+
+      t = millis() - t;
+      Serial.print("mp3 loop took ");
+      Serial.print(t);
+      Serial.println("ms");
     } else {
       //source_sd->close();
       //source_sd->open("/music/test.mp3");
@@ -151,7 +156,12 @@ void loop() {
     last_rfid_time = now;
 
     //if ( mfrc522.PICC_IsNewCardPresent()) {
+    unsigned long t = millis();
     MFRC522::StatusCode result = mfrc522.PICC_RequestA(bufferATQA, &bufferSize);
+    t = millis() - t;
+    Serial.print("RFID check took ");
+    Serial.print(t);
+    Serial.println("ms");
     if (result == MFRC522::StatusCode::STATUS_OK) {
       // RFID detected
       // Serial.println("RFID detected");
