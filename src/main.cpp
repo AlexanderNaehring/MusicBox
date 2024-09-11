@@ -7,11 +7,8 @@
 #include "AudioFileSourceSD.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
-#include "MFRC522Constants.h"
-#include "MFRC522Debug.h"
-#include "MFRC522DriverPinSimple.h"
-#include "MFRC522DriverSPI.h"
-#include "MFRC522v2.h"
+#include "MFRC522.h"
+#include "NfcAdapter.h"
 
 // Button inputs
 #define BTN_CARD_INSIDE 17
@@ -31,11 +28,10 @@ SPIClass spi_2(HSPI);
 #define RFID_MISO 12
 #define RFID_SCK 14
 #define RFID_CS 15
-MFRC522DriverPinSimple ss_pin(RFID_CS);
 const SPISettings spiSettings =
     SPISettings(SPI_CLOCK_DIV4, MSBFIRST, SPI_MODE0);
-MFRC522DriverSPI spi_driver{ss_pin, spi_2, spiSettings};
-MFRC522 mfrc522{spi_driver};
+MFRC522 mfrc522(RFID_CS, UINT8_MAX, spi_2);
+NfcAdapter nfc = NfcAdapter(&mfrc522);
 
 // ESP8266Audio
 #define AUDIO_SOURCE_BUFFER_SIZE 4096
@@ -45,7 +41,7 @@ AudioFileSourceID3 *source_id3 = NULL;
 AudioGeneratorMP3 *mp3 = NULL;
 AudioOutputI2S *out_i2s = NULL;
 
-String getHexString(byte *buffer, byte bufferSize) {
+String getHexString(const byte *buffer, byte bufferSize) {
   String id = "";
   for (byte i = 0; i < bufferSize; i++) {
     id += buffer[i] < 0x10 ? "0" : "";
@@ -92,7 +88,7 @@ void setup() {
 
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
 
-  Serial.println("SPI...");
+  Serial.println("SD_SPI...");
   spi_1.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   Serial.println("SD...");
   if (!SD.begin(SD_CS, spi_1)) {
@@ -102,8 +98,10 @@ void setup() {
   }
 
   Serial.println("RFID...");
+  spi_2.begin(RFID_SCK, RFID_MISO, RFID_MOSI, RFID_CS);
   mfrc522.PCD_Init();
-  MFRC522Debug::PCD_DumpVersionToSerial(mfrc522, Serial);
+  mfrc522.PCD_DumpVersionToSerial();
+  nfc.begin();
 
   // file = SD.open("/music/Sonya Belousova - My Sails Are Set (Feat
   // AURORA).mp3");
@@ -128,38 +126,26 @@ void setup() {
 }
 
 bool play_flag = false;
-
-unsigned int card_inside;
-unsigned long last_rfid_time;
 unsigned long last_rfid_check_time;
-MFRC522::Uid last_uid;
-unsigned long rfid_flag = 0;
 #define RFID_INTERVAL 400
 #define RFID_PAUSE_AFTER_INTERVAL 3
 #define RFID_CHECK_INTERVAL 50
 
-byte bufferATQA[2];
-byte bufferSize = sizeof(bufferATQA);
+#define MAX_UID_LEN 10
+byte current_uid[MAX_UID_LEN];
+byte last_uid[MAX_UID_LEN];
 
 void loop() {
   unsigned long now = millis();
 
   if (play_flag) {
     if (mp3->isRunning()) {
-      // unsigned long t = millis();
       if (!mp3->loop()) {
         Serial.println("mp3->stop();");
         mp3->stop();
       }
-
-      // t = millis() - t;
-      // Serial.print("mp3 loop took ");
-      // Serial.print(t);
-      // Serial.println("ms");
     } else {
       // source_sd->close();
-      // source_sd->open("/music/test.mp3");
-      // mp3->begin(source_id3, out_i2s);
     }
   }
 
@@ -169,48 +155,85 @@ void loop() {
       // card inside
       if (!play_flag) {
         // nothing is playing
-        // try to read card
-        // unsigned long t = millis();
+        // wait for read card
         Serial.print(".");
-        MFRC522::StatusCode result =
-            mfrc522.PICC_RequestA(bufferATQA, &bufferSize);
-        // t = millis() - t;
-        // Serial.print("RFID check took ");
-        // Serial.print(t);
-        // Serial.println("ms");
-
-        if (result == MFRC522::StatusCode::STATUS_OK) {
+        if (nfc.tagPresent()) {
           // RFID detected
           Serial.println("RFID detected");
-          if (mfrc522.PICC_ReadCardSerial()) {
-            Serial.println(getHexString(mfrc522.uid.uidByte, mfrc522.uid.size));
-            // check if new RFID tag is equal to last_uid, or it's completely
-            // new -> resume or start fresh
-            if (compareUid(mfrc522.uid, last_uid)) {
-              // current RFID is same as last RFID, resume playback
-              Serial.println("Resume playback");
-              play_flag = true;
-            } else {
-              // different RFID, read card and start new playback
-              memcpy(&last_uid, &mfrc522.uid, sizeof(mfrc522.uid));
+          NfcTag tag = nfc.read();
 
-              Serial.println("Start new playback");
-              play_flag = true;
-              re_init_audio_source();
+          Serial.print("UID: ");
+          Serial.println(tag.getUidString());
 
-              // source_sd->open("/music/Sonya Belousova - My Sails Are Set
-              // (Feat AURORA).mp3");
-              source_sd->open("/music/Alan Walker - Fade.mp3");
-              mp3->begin(source_id3, out_i2s);
-              Serial.println("Go back to main loop...");
+          memset(&current_uid, 0, MAX_UID_LEN);
+          byte current_uid_len = MAX_UID_LEN;
+          tag.getUid(current_uid, &current_uid_len);
+
+          if (memcmp(last_uid, current_uid, current_uid_len) == 0) {
+            // current RFID is same as last RFID, resume playback
+            Serial.println("Resume playback");
+            play_flag = true;
+          } else {
+            // different RFID, read card and start new playback
+            memset(&last_uid, 0, MAX_UID_LEN);
+            memcpy(&last_uid, &current_uid, current_uid_len);
+
+            // read path
+            if (!tag.hasNdefMessage()) {
+              Serial.println("NFC Tag has no NDEF message");
               return;
             }
-            // MFRC522Debug::PICC_DumpToSerial(mfrc522, Serial, &(mfrc522.uid));
+            NdefMessage message = tag.getNdefMessage();
+
+            if (message.getRecordCount() < 1) {
+              Serial.println("Not enough NDEF records found");
+              return;
+            }
+
+            // read 1st record
+            NdefRecord record = message.getRecord(0);
+            // NdefRecord record = message[i]; // alternate syntax
+
+            if (record.getTnf() != NdefRecord::TNF::TNF_WELL_KNOWN) {
+              Serial.println("NDEF TNF record is not WELL_KNOWN");
+              return;
+            }
+
+            if (record.getTypeLength() != 1 ||
+                ((char *)record.getType())[0] != 'T') {
+              Serial.println("NDEF record has incorrect type.");
+              return;
+            }
+
+            int payloadLength = record.getPayloadLength();
+            const byte *payload = record.getPayload();
+
+            int languageLen = (int)payload[0];
+            String filePath = "";
+            for (int c = 1 + languageLen; c < payloadLength; c++) {
+              filePath += (char)payload[c];
+            }
+
+            // Print the Hex and Printable Characters
+            Serial.print("file path: ");
+            Serial.println(filePath);
+
+            Serial.println("Start new playback");
+            play_flag = true;
+            re_init_audio_source();
+
+            // source_sd->open("/music/Sonya Belousova - My Sails Are Set
+            // (Feat AURORA).mp3");
+            // source_sd->open("/music/Alan Walker - Fade.mp3");
+            source_sd->open(filePath.c_str());
+            mp3->begin(source_id3, out_i2s);
+            Serial.println("Go back to main loop...");
+            return;
           }
         }
       }
     } else {
-      // no card inside
+      // no RFID
       if (play_flag) {
         Serial.println("Pause playback");
         play_flag = false;
