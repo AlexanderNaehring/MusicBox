@@ -86,6 +86,7 @@ void setup() {
   Serial.begin(115200);
   Serial.println("Setup...");
 
+  // Buttons
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
 
   Serial.println("SD_SPI...");
@@ -97,25 +98,17 @@ void setup() {
     }
   }
 
+  // RFID - NFC
   Serial.println("RFID...");
   spi_2.begin(RFID_SCK, RFID_MISO, RFID_MOSI, RFID_CS);
   mfrc522.PCD_Init();
   mfrc522.PCD_DumpVersionToSerial();
   nfc.begin();
 
-  // file = SD.open("/music/Sonya Belousova - My Sails Are Set (Feat
-  // AURORA).mp3");
-
+  // Audio
   audioLogger = &Serial;
   Serial.println("Audio...");
-  source_sd = new AudioFileSourceSD();
-  // uint8_t *buffer = (uint8_t*)malloc(sizeof(uint8_t) *
-  // AUDIO_SOURCE_BUFFER_SIZE);
-  source_buffer =
-      new AudioFileSourceBuffer(source_sd, AUDIO_SOURCE_BUFFER_SIZE);
-  // ID3 file source for MP3 files reduces the delay until playback starts, and
-  // enabled ID3 Tag callbacks
-  source_id3 = new AudioFileSourceID3(source_buffer);
+  re_init_audio_source();
 
   out_i2s = new AudioOutputI2S();
   out_i2s->SetGain(10 / 100.0);
@@ -214,17 +207,12 @@ void loop() {
               filePath += (char)payload[c];
             }
 
-            // Print the Hex and Printable Characters
             Serial.print("file path: ");
             Serial.println(filePath);
 
             Serial.println("Start new playback");
             play_flag = true;
             re_init_audio_source();
-
-            // source_sd->open("/music/Sonya Belousova - My Sails Are Set
-            // (Feat AURORA).mp3");
-            // source_sd->open("/music/Alan Walker - Fade.mp3");
             source_sd->open(filePath.c_str());
             mp3->begin(source_id3, out_i2s);
             Serial.println("Go back to main loop...");
