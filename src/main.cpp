@@ -7,11 +7,17 @@
 #include "AudioFileSourceSD.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
+#include "ESP32Encoder.h"
 #include "MFRC522.h"
 #include "NfcAdapter.h"
 
 // Button inputs
 #define BTN_CARD_INSIDE 17
+
+// Encoder
+#define RotaryA 32
+#define RotaryB 33
+ESP32Encoder rotaryGain;
 
 // SPI
 SPIClass spi_1(VSPI);
@@ -34,6 +40,9 @@ MFRC522 mfrc522(RFID_CS, UINT8_MAX, spi_2);
 NfcAdapter nfc = NfcAdapter(&mfrc522);
 
 // ESP8266Audio
+#define MinAudioGain 1
+#define InitialAudioGain 8
+#define MaxAudioGain 40
 #define AUDIO_SOURCE_BUFFER_SIZE 4096
 AudioFileSourceSD *source_sd = NULL;
 AudioFileSourceBuffer *source_buffer = NULL;
@@ -89,6 +98,12 @@ void setup() {
   // Buttons
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
 
+  // Rotary
+  ESP32Encoder::useInternalWeakPullResistors = puType::up;
+  rotaryGain.attachHalfQuad(RotaryA, RotaryB);
+  rotaryGain.setCount(InitialAudioGain);
+
+  // SD card
   Serial.println("SD_SPI...");
   spi_1.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   Serial.println("SD...");
@@ -111,7 +126,7 @@ void setup() {
   re_init_audio_source();
 
   out_i2s = new AudioOutputI2S();
-  out_i2s->SetGain(10 / 100.0);
+  out_i2s->SetGain(InitialAudioGain / 100.0);
 
   mp3 = new AudioGeneratorMP3();
 
@@ -128,8 +143,25 @@ unsigned long last_rfid_check_time;
 byte current_uid[MAX_UID_LEN];
 byte last_uid[MAX_UID_LEN];
 
+int64_t lastGain = InitialAudioGain;
+
 void loop() {
   unsigned long now = millis();
+
+  // read encoder
+  int64_t gain = rotaryGain.getCount();
+  if (gain != lastGain) {
+    if (gain < MinAudioGain)
+      gain = MinAudioGain;
+    else if (gain > MaxAudioGain)
+      gain = MaxAudioGain;
+    lastGain = gain;
+    rotaryGain.clearCount();
+    rotaryGain.setCount(gain);
+    Serial.print("Set gain: ");
+    Serial.println(gain);
+    out_i2s->SetGain(gain / 100.0);
+  }
 
   if (play_flag) {
     if (mp3->isRunning()) {
