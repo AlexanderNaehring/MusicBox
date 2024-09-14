@@ -14,6 +14,10 @@
 #include "NfcAdapter.h"
 #include "OneButton.h"
 
+#define DEBUG true
+#define D_LOG \
+  if (DEBUG) Serial
+
 // Button inputs
 #define BTN_CARD_INSIDE 17
 OneButton btnNext(35, true, false);
@@ -23,6 +27,11 @@ OneButton btnPrev(34, true, false);
 #define RotaryA 33
 #define RotaryB 32
 ESP32Encoder rotaryGain;
+
+// RGB LED
+#define LED_R 4
+#define LED_G 27
+#define LED_B 16
 
 // SPI
 SPIClass spi_1(VSPI);
@@ -90,6 +99,12 @@ bool compareUid(MFRC522::Uid &uid1, MFRC522::Uid &uid2) {
   return true;
 }
 
+void setLED(uint8_t red, uint8_t green, uint8_t blue) {
+  analogWrite(LED_R, 255 - red);
+  analogWrite(LED_G, 255 - green);
+  analogWrite(LED_B, 255 - blue);
+}
+
 void re_init_audio_source(bool deleteSources = true) {
   Serial.printf("Re-init audio source...");
 
@@ -141,6 +156,7 @@ void stop() {
   Serial.printf("  reset flags\n");
   currentFile = -1;
   play_flag = false;
+  setLED(200, 200, 200);
 }
 char *strRight(const char *str, size_t n) {
   size_t len = strlen(str);
@@ -218,6 +234,7 @@ void playNext() {
   mp3->begin(source_id3, out_i2s);
   lastPlayMillis = millis();
   play_flag = true;
+  setLED(0, 200, 0);
 }
 
 void playPrev() {
@@ -255,6 +272,7 @@ void playFileOrFolder(const char *path) {
   File root = SD.open(path);
   if (!root) {
     Serial.printf("Failed to open %s\n", path);
+    setLED(200, 0, 0);
     return;
   }
 
@@ -276,12 +294,21 @@ void playFileOrFolder(const char *path) {
     }
     Serial.printf("Start queue\n");
     playNext();
+  } else {
+    // no files in queue
+    setLED(200, 0, 0);
   }
 }
 
 void setup() {
   Serial.begin(115200);
   Serial.println("Setup...");
+
+  // LED
+  pinMode(LED_R, OUTPUT);
+  pinMode(LED_G, OUTPUT);
+  pinMode(LED_B, OUTPUT);
+  setLED(200, 0, 0);
 
   // Buttons
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
@@ -321,6 +348,7 @@ void setup() {
   mp3 = new AudioGeneratorMP3();
 
   Serial.println("Waiting for RFID...");
+  setLED(200, 200, 200);
 }
 
 void loop() {
@@ -353,6 +381,8 @@ void loop() {
     }
   }
 
+  // TODO add better state machine -> switch between
+  // WAITING_FOR_CARD -> CARD_IN -> PLAYBACK -> STOPPED, etc...
   if (now - last_rfid_check_time > RFID_CHECK_INTERVAL) {
     last_rfid_check_time = now;
     if (digitalRead(BTN_CARD_INSIDE) == LOW) {
@@ -360,6 +390,7 @@ void loop() {
       if (!play_flag) {
         // nothing is playing
         // wait for read card
+        setLED(200, 200, 200);
         Serial.print(".");
         if (nfc.tagPresent()) {
           // RFID detected
@@ -377,6 +408,7 @@ void loop() {
             // current RFID is same as last RFID, resume playback
             Serial.println("Resume playback");
             play_flag = true;
+            setLED(0, 200, 0);
           } else {
             // different RFID, read card and start new playback
             memset(&last_uid, 0, MAX_UID_LEN);
@@ -384,12 +416,14 @@ void loop() {
             // read path
             if (!tag.hasNdefMessage()) {
               Serial.println("NFC Tag has no NDEF message");
+              setLED(200, 0, 0);
               return;
             }
             NdefMessage message = tag.getNdefMessage();
 
             if (message.getRecordCount() < 1) {
               Serial.println("Not enough NDEF records found");
+              setLED(200, 0, 0);
               return;
             }
 
@@ -399,12 +433,14 @@ void loop() {
 
             if (record.getTnf() != NdefRecord::TNF::TNF_WELL_KNOWN) {
               Serial.println("NDEF TNF record is not WELL_KNOWN");
+              setLED(200, 0, 0);
               return;
             }
 
             if (record.getTypeLength() != 1 ||
                 ((char *)record.getType())[0] != 'T') {
               Serial.println("NDEF record has incorrect type.");
+              setLED(200, 0, 0);
               return;
             }
 
@@ -434,6 +470,7 @@ void loop() {
       if (play_flag) {
         Serial.println("Pause playback");
         play_flag = false;
+        setLED(200, 200, 0);
       }
     }
   }
