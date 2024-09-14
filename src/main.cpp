@@ -2,6 +2,8 @@
 #include <SD.h>
 #include <SPI.h>
 
+#include <vector>
+
 #include "AudioFileSourceBuffer.h"
 #include "AudioFileSourceID3.h"
 #include "AudioFileSourceSD.h"
@@ -10,13 +12,16 @@
 #include "ESP32Encoder.h"
 #include "MFRC522.h"
 #include "NfcAdapter.h"
+#include "OneButton.h"
 
 // Button inputs
 #define BTN_CARD_INSIDE 17
+OneButton btnNext(35, true, false);
+OneButton btnPrev(34, true, false);
 
 // Encoder
-#define RotaryA 32
-#define RotaryB 33
+#define RotaryA 33
+#define RotaryB 32
 ESP32Encoder rotaryGain;
 
 // SPI
@@ -42,13 +47,31 @@ NfcAdapter nfc = NfcAdapter(&mfrc522);
 // ESP8266Audio
 #define MinAudioGain 1
 #define InitialAudioGain 8
-#define MaxAudioGain 40
-#define AUDIO_SOURCE_BUFFER_SIZE 4096
+#define MaxAudioGain 50
+#define AUDIO_SOURCE_BUFFER_SIZE 1024 * 4
 AudioFileSourceSD *source_sd = NULL;
 AudioFileSourceBuffer *source_buffer = NULL;
 AudioFileSourceID3 *source_id3 = NULL;
 AudioGeneratorMP3 *mp3 = NULL;
 AudioOutputI2S *out_i2s = NULL;
+
+// General stuff
+#define MAX_UID_LEN 10
+
+std::vector<char *> files{};
+int currentFile = -1;
+unsigned long lastPlayMillis = 0;
+
+bool play_flag = false;
+unsigned long last_rfid_check_time;
+#define RFID_INTERVAL 400
+#define RFID_PAUSE_AFTER_INTERVAL 3
+#define RFID_CHECK_INTERVAL 50
+
+byte current_uid[MAX_UID_LEN];
+byte last_uid[MAX_UID_LEN];
+
+int64_t lastGain = InitialAudioGain;
 
 String getHexString(const byte *buffer, byte bufferSize) {
   String id = "";
@@ -67,28 +90,193 @@ bool compareUid(MFRC522::Uid &uid1, MFRC522::Uid &uid2) {
   return true;
 }
 
-void re_init_audio_source() {
-  if (source_sd) {
-    delete source_sd;
-    source_sd = NULL;
-  }
-  if (source_buffer) {
-    delete source_buffer;
-    source_buffer = NULL;
-  }
-  if (source_id3) {
-    delete source_id3;
-    source_id3 = NULL;
+void re_init_audio_source(bool deleteSources = true) {
+  Serial.printf("Re-init audio source...");
+
+  if (mp3 && mp3->isRunning()) mp3->stop();
+
+  if (deleteSources) {
+    Serial.printf(" delete sources...");
+    if (source_sd) {
+      delete source_sd;
+      source_sd = NULL;
+    }
+    if (source_buffer) {
+      delete source_buffer;
+      source_buffer = NULL;
+    }
+    if (source_id3) {
+      delete source_id3;
+      source_id3 = NULL;
+    }
   }
 
-  source_sd = new AudioFileSourceSD();
-  // uint8_t *buffer = (uint8_t*)malloc(sizeof(uint8_t) *
-  // AUDIO_SOURCE_BUFFER_SIZE);
-  source_buffer =
-      new AudioFileSourceBuffer(source_sd, AUDIO_SOURCE_BUFFER_SIZE);
+  Serial.printf(" create sources if required...");
+  if (!source_sd) source_sd = new AudioFileSourceSD();
+  if (!source_buffer)
+    source_buffer =
+        new AudioFileSourceBuffer(source_sd, AUDIO_SOURCE_BUFFER_SIZE);
   // ID3 file source for MP3 files reduces the delay until playback starts, and
   // enabled ID3 Tag callbacks
-  source_id3 = new AudioFileSourceID3(source_buffer);
+  if (!source_id3) source_id3 = new AudioFileSourceID3(source_buffer);
+
+  Serial.printf(" done\n");
+}
+
+void stop() {
+  Serial.printf("stop()\n");
+  if (mp3 && mp3->isRunning()) {
+    Serial.printf("   mp3->stop()\n");
+    mp3->stop();
+  }
+  Serial.printf("  reset last_uid\n");
+  memset(&last_uid, 0, MAX_UID_LEN);
+  if (files.size() > 0) {
+    Serial.printf("  clear files list\n");
+    for (char *x : files) {
+      free((void *)x);
+    }
+    files.clear();
+  }
+  Serial.printf("  reset flags\n");
+  currentFile = -1;
+  play_flag = false;
+}
+char *strRight(const char *str, size_t n) {
+  size_t len = strlen(str);
+  if (n > len) n = len;
+  return (char *)str + len - n;
+}
+
+void addFileToQueue(fs::File file) {
+  // String path = file.path();
+  // directly converting file.path() to a String totally breaks...
+  // the String content is for example " b ?␟"...
+  /*
+  const char *c_path = file.path();
+  String path = "";
+  for (int c = 0;; c++) {
+    if (c_path[c] == 0) {
+      break;
+    }
+    path += (char)c_path[c];
+    Serial.printf("current char: %c (%x), path: %s\n", c_path[c],
+                  (byte)c_path[c], path);
+  }
+  */
+  // the String breaks when adding the dot "."
+  // use character arrays instead :(
+  const char *tmp = file.path();
+  if (strcmp(strRight(tmp, 4), ".mp3")) {
+    Serial.printf("Skip %s, files must end with .mp3\n", tmp);
+    return;
+  }
+  char *path = (char *)malloc((strlen(tmp) + 1) * sizeof(char));
+  strcpy(path, file.path());
+  Serial.printf("Add to queue: %s\n", path);
+  files.push_back(path);
+}
+
+void addFolderToQueue(fs::File root) {
+  if (!root.isDirectory()) {
+    Serial.println("Not a directory");
+    root.close();
+    return;
+  }
+
+  File file = root.openNextFile();
+  while (file) {
+    if (!file.isDirectory()) {
+      addFileToQueue(file);
+    }
+    file.close();
+    file = root.openNextFile();
+  }
+}
+
+void playNext() {
+  Serial.println("playNext()");
+  if (files.size() <= 0) {
+    Serial.printf("Queue empty\n");
+    return;
+  }
+  if (currentFile >= (int)files.size() - 1) {
+    Serial.printf("End of queue (%d, %d)\n", currentFile, files.size());
+    stop();
+    play_flag = true;  // do not unset play flag, otherwise card will be read
+                       // again and new playback starts
+    return;
+  }
+
+  currentFile++;
+  char *filepath = files[currentFile];
+
+  // actual start of play
+  re_init_audio_source();
+  source_sd->open(filepath);
+  Serial.printf("mp3->begin() %s\n", filepath);
+  mp3->begin(source_id3, out_i2s);
+  lastPlayMillis = millis();
+  play_flag = true;
+}
+
+void playPrev() {
+  Serial.println("playPrev()");
+  if (files.size() <= 0) {
+    Serial.printf("Cannot play, queue empty\n");
+    return;
+  }
+
+  // check if more than x seconds into the current file
+  if ((millis() - lastPlayMillis) > 10000) {
+    Serial.printf("Play current file from start");
+    currentFile--;
+    playNext();
+    return;
+  }
+
+  //
+  if (currentFile <= 0) {
+    Serial.printf("Beginning of queue, restart current file\n");
+    currentFile--;
+    playNext();
+    return;
+  }
+
+  currentFile -= 2;
+  playNext();
+  return;
+}
+
+void playFileOrFolder(const char *path) {
+  Serial.printf("playFileOrFolder(%s)\n", path);
+  stop();
+
+  File root = SD.open(path);
+  if (!root) {
+    Serial.printf("Failed to open %s\n", path);
+    return;
+  }
+
+  if (root.isDirectory()) {
+    addFolderToQueue(root);
+  } else {
+    addFileToQueue(root);
+  }
+  root.close();
+
+  if (files.size() > 0) {
+    auto cstr_compare = [](const char *s1, const char *s2) {
+      return strcmp(s1, s2) < 0;
+    };
+    sort(files.begin(), files.end(), cstr_compare);
+    Serial.printf("Queue:\n");
+    for (auto x : files) {
+      Serial.printf("  %s\n", x);
+    }
+    Serial.printf("Start queue\n");
+    playNext();
+  }
 }
 
 void setup() {
@@ -97,6 +285,8 @@ void setup() {
 
   // Buttons
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
+  btnNext.attachClick(playNext);
+  btnPrev.attachClick(playPrev);
 
   // Rotary
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
@@ -133,20 +323,12 @@ void setup() {
   Serial.println("Waiting for RFID...");
 }
 
-bool play_flag = false;
-unsigned long last_rfid_check_time;
-#define RFID_INTERVAL 400
-#define RFID_PAUSE_AFTER_INTERVAL 3
-#define RFID_CHECK_INTERVAL 50
-
-#define MAX_UID_LEN 10
-byte current_uid[MAX_UID_LEN];
-byte last_uid[MAX_UID_LEN];
-
-int64_t lastGain = InitialAudioGain;
-
 void loop() {
   unsigned long now = millis();
+
+  // update buttons
+  btnNext.tick();
+  btnPrev.tick();
 
   // read encoder
   int64_t gain = rotaryGain.getCount();
@@ -166,11 +348,8 @@ void loop() {
   if (play_flag) {
     if (mp3->isRunning()) {
       if (!mp3->loop()) {
-        Serial.println("mp3->stop();");
-        mp3->stop();
+        playNext();
       }
-    } else {
-      // source_sd->close();
     }
   }
 
@@ -201,7 +380,6 @@ void loop() {
           } else {
             // different RFID, read card and start new playback
             memset(&last_uid, 0, MAX_UID_LEN);
-            memcpy(&last_uid, &current_uid, current_uid_len);
 
             // read path
             if (!tag.hasNdefMessage()) {
@@ -239,15 +417,14 @@ void loop() {
               filePath += (char)payload[c];
             }
 
-            Serial.print("file path: ");
-            Serial.println(filePath);
+            Serial.printf("Path: %s\n", filePath);
 
-            Serial.println("Start new playback");
-            play_flag = true;
             re_init_audio_source();
-            source_sd->open(filePath.c_str());
-            mp3->begin(source_id3, out_i2s);
-            Serial.println("Go back to main loop...");
+            playFileOrFolder(filePath.c_str());
+
+            // remember current RFID UID for "pause/resume" function
+            memcpy(&last_uid, &current_uid, current_uid_len);
+            Serial.println("Continue main loop...");
             return;
           }
         }
