@@ -33,6 +33,11 @@ ESP32Encoder rotaryGain;
 #define LED_G 27
 #define LED_B 16
 
+#define RGB_Waiting 200, 200, 200
+#define RGB_Error 200, 0, 0
+#define RGB_Play 0, 200, 0
+#define RGB_Pause 200, 200, 0
+
 // SPI
 SPIClass spi_1(VSPI);
 SPIClass spi_2(HSPI);
@@ -159,7 +164,7 @@ void stop() {
   currentFile = -1;
   snprintf(currentFolder, 2048, "");
   play_flag = false;
-  setLED(200, 200, 200);
+  setLED(RGB_Waiting);
 }
 char *strRight(const char *str, size_t n) {
   size_t len = strlen(str);
@@ -246,7 +251,7 @@ void playNext() {
   mp3->begin(source_id3, out_i2s);
   lastPlayMillis = millis();
   play_flag = true;
-  setLED(0, 200, 0);
+  setLED(RGB_Play);
 }
 
 void playPrev() {
@@ -292,7 +297,7 @@ void playFileOrFolder(const char *path) {
   File root = SD.open(path);
   if (!root) {
     Serial.printf("Failed to open %s\n", path);
-    setLED(200, 0, 0);
+    setLED(RGB_Error);
     return;
   }
 
@@ -331,7 +336,7 @@ void playFileOrFolder(const char *path) {
     playNext();
   } else {
     // no files in queue
-    setLED(200, 0, 0);
+    setLED(RGB_Error);
   }
 }
 
@@ -343,7 +348,7 @@ void setup() {
   pinMode(LED_R, OUTPUT);
   pinMode(LED_G, OUTPUT);
   pinMode(LED_B, OUTPUT);
-  setLED(200, 0, 0);
+  setLED(RGB_Error);
 
   // Buttons
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
@@ -384,7 +389,7 @@ void setup() {
   mp3 = new AudioGeneratorMP3();
 
   Serial.println("Waiting for RFID...");
-  setLED(200, 200, 200);
+  setLED(RGB_Waiting);
 }
 
 void loop() {
@@ -426,7 +431,7 @@ void loop() {
       if (!play_flag) {
         // nothing is playing
         // wait for read card
-        setLED(200, 200, 200);
+        setLED(RGB_Waiting);
         Serial.print(".");
         if (nfc.tagPresent()) {
           // RFID detected
@@ -444,7 +449,7 @@ void loop() {
             // current RFID is same as last RFID, resume playback
             Serial.println("Resume playback");
             play_flag = true;
-            setLED(0, 200, 0);
+            setLED(RGB_Play);
           } else {
             // different RFID, read card and start new playback
             memset(&last_uid, 0, MAX_UID_LEN);
@@ -452,14 +457,14 @@ void loop() {
             // read path
             if (!tag.hasNdefMessage()) {
               Serial.println("NFC Tag has no NDEF message");
-              setLED(200, 0, 0);
+              setLED(RGB_Error);
               return;
             }
             NdefMessage message = tag.getNdefMessage();
 
             if (message.getRecordCount() < 1) {
               Serial.println("Not enough NDEF records found");
-              setLED(200, 0, 0);
+              setLED(RGB_Error);
               return;
             }
 
@@ -469,14 +474,14 @@ void loop() {
 
             if (record.getTnf() != NdefRecord::TNF::TNF_WELL_KNOWN) {
               Serial.println("NDEF TNF record is not WELL_KNOWN");
-              setLED(200, 0, 0);
+              setLED(RGB_Error);
               return;
             }
 
             if (record.getTypeLength() != 1 ||
                 ((char *)record.getType())[0] != 'T') {
               Serial.println("NDEF record has incorrect type.");
-              setLED(200, 0, 0);
+              setLED(RGB_Error);
               return;
             }
 
@@ -506,7 +511,7 @@ void loop() {
       if (play_flag) {
         Serial.println("Pause playback");
         play_flag = false;
-        setLED(200, 200, 0);
+        setLED(RGB_Pause);
       }
     }
   }
