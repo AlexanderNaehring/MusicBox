@@ -225,6 +225,16 @@ void playNext() {
   }
   if (currentFile >= (int)files.size() - 1) {
     Serial.printf("End of queue (%d, %d)\n", currentFile, files.size());
+
+    if (strlen(currentFolder) > 0) {
+      File file = SD.open(lastTrackFile, "w");
+      if (file) {
+        Serial.printf("clear lastTrackFile\n");
+        file.printf("0");
+        file.close();
+      }
+    }
+
     stop();
     play_flag = true;  // do not unset play flag, otherwise card will be read
                        // again and new playback starts
