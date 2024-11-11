@@ -69,6 +69,8 @@ AudioOutputI2S *out_i2s = NULL;
 
 std::vector<char *> files{};
 int currentFile = -1;
+char currentFolder[2048];
+char lastTrackFile[2048];
 unsigned long lastPlayMillis = 0;
 
 bool play_flag = false;
@@ -155,6 +157,7 @@ void stop() {
   }
   Serial.printf("  reset flags\n");
   currentFile = -1;
+  snprintf(currentFolder, 2048, "");
   play_flag = false;
   setLED(200, 200, 200);
 }
@@ -196,7 +199,6 @@ void addFileToQueue(fs::File file) {
 void addFolderToQueue(fs::File root) {
   if (!root.isDirectory()) {
     Serial.println("Not a directory");
-    root.close();
     return;
   }
 
@@ -227,7 +229,17 @@ void playNext() {
   currentFile++;
   char *filepath = files[currentFile];
 
-  // actual start of play
+  // save current track number to SD
+  if (strlen(currentFolder) > 0) {
+    File file = SD.open(lastTrackFile, "w");
+    if (file) {
+      Serial.printf("Writing track number to '/last.txt'...\n");
+      file.printf("%d", currentFile);
+      file.close();
+    }
+  }
+
+  // start playback
   re_init_audio_source();
   source_sd->open(filepath);
   Serial.printf("mp3->begin() %s\n", filepath);
@@ -252,7 +264,7 @@ void playPrev() {
     return;
   }
 
-  //
+  // already at first file in queue?
   if (currentFile <= 0) {
     Serial.printf("Beginning of queue, restart current file\n");
     currentFile--;
@@ -260,14 +272,22 @@ void playPrev() {
     return;
   }
 
+  // go to previous file in queue
   currentFile -= 2;
   playNext();
   return;
 }
 
+void playFirst() {
+  Serial.println("playFirst()");
+  currentFile = -1;
+  playNext();
+}
+
 void playFileOrFolder(const char *path) {
   Serial.printf("playFileOrFolder(%s)\n", path);
   stop();
+  int lastTrack = 0;
 
   File root = SD.open(path);
   if (!root) {
@@ -278,6 +298,16 @@ void playFileOrFolder(const char *path) {
 
   if (root.isDirectory()) {
     addFolderToQueue(root);
+
+    snprintf(currentFolder, 2048, "%s", path);
+    snprintf(lastTrackFile, 2048, "%s%s", path, "/last.txt");
+    File file = SD.open(lastTrackFile);
+    if (file) {
+      Serial.printf("Found '/last.txt' file, checking content...\n");
+      lastTrack = file.parseInt();
+      file.close();
+    }
+
   } else {
     addFileToQueue(root);
   }
@@ -292,7 +322,12 @@ void playFileOrFolder(const char *path) {
     for (auto x : files) {
       Serial.printf("  %s\n", x);
     }
-    Serial.printf("Start queue\n");
+    if (lastTrack > 0 && lastTrack < files.size()) {
+      Serial.printf("Jump to track %d\n", lastTrack);
+      currentFile = lastTrack - 1;
+    } else {
+      Serial.printf("Start queue from start\n");
+    }
     playNext();
   } else {
     // no files in queue
@@ -314,6 +349,7 @@ void setup() {
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
   btnNext.attachClick(playNext);
   btnPrev.attachClick(playPrev);
+  btnPrev.attachLongPressStart(playFirst);
 
   // Rotary
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
