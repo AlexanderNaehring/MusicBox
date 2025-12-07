@@ -63,19 +63,19 @@ NfcAdapter nfc = NfcAdapter(&mfrc522);
 #define InitialAudioGain 8
 #define MaxAudioGain 50
 #define AUDIO_SOURCE_BUFFER_SIZE 1024 * 4
-AudioFileSourceSD *source_sd = NULL;
-AudioFileSourceBuffer *source_buffer = NULL;
-AudioFileSourceID3 *source_id3 = NULL;
-AudioGeneratorMP3 *mp3 = NULL;
-AudioOutputI2S *out_i2s = NULL;
+AudioFileSourceSD* source_sd = NULL;
+AudioFileSourceBuffer* source_buffer = NULL;
+AudioFileSourceID3* source_id3 = NULL;
+AudioGeneratorMP3* mp3 = NULL;
+AudioOutputI2S* out_i2s = NULL;
 
 // General stuff
 #define MAX_UID_LEN 10
 
-std::vector<char *> files{};
+std::vector<char*> files{};
 int currentFile = -1;
-char currentFolder[2048];
-char lastTrackFile[2048];
+char* currentFolder = nullptr;
+char* lastTrackFile = nullptr;
 unsigned long lastPlayMillis = 0;
 
 bool play_flag = false;
@@ -89,7 +89,7 @@ byte last_uid[MAX_UID_LEN];
 
 int64_t lastGain = InitialAudioGain;
 
-String getHexString(const byte *buffer, byte bufferSize) {
+String getHexString(const byte* buffer, byte bufferSize) {
   String id = "";
   for (byte i = 0; i < bufferSize; i++) {
     id += buffer[i] < 0x10 ? "0" : "";
@@ -98,7 +98,7 @@ String getHexString(const byte *buffer, byte bufferSize) {
   return id;
 }
 
-bool compareUid(MFRC522::Uid &uid1, MFRC522::Uid &uid2) {
+bool compareUid(MFRC522::Uid& uid1, MFRC522::Uid& uid2) {
   if (uid1.size != uid2.size) return false;
   for (byte i = 0; i < uid1.size; i++) {
     if (uid1.uidByte[i] != uid2.uidByte[i]) return false;
@@ -155,21 +155,24 @@ void stop() {
   memset(&last_uid, 0, MAX_UID_LEN);
   if (files.size() > 0) {
     Serial.printf("  clear files list\n");
-    for (char *x : files) {
-      free((void *)x);
+    for (char* x : files) {
+      free((void*)x);
     }
     files.clear();
   }
   Serial.printf("  reset flags\n");
   currentFile = -1;
-  snprintf(currentFolder, 2048, "");
+  if (currentFolder) {
+    free(currentFolder);
+    currentFolder = nullptr;
+  }
   play_flag = false;
   setLED(RGB_Waiting);
 }
-char *strRight(const char *str, size_t n) {
+char* strRight(const char* str, size_t n) {
   size_t len = strlen(str);
   if (n > len) n = len;
-  return (char *)str + len - n;
+  return (char*)str + len - n;
 }
 
 void addFileToQueue(fs::File file) {
@@ -190,12 +193,12 @@ void addFileToQueue(fs::File file) {
   */
   // the String breaks when adding the dot "."
   // use character arrays instead :(
-  const char *tmp = file.path();
+  const char* tmp = file.path();
   if (strcmp(strRight(tmp, 4), ".mp3")) {
     Serial.printf("Skip %s, files must end with .mp3\n", tmp);
     return;
   }
-  char *path = (char *)malloc((strlen(tmp) + 1) * sizeof(char));
+  char* path = (char*)malloc((strlen(tmp) + 1) * sizeof(char));
   strcpy(path, file.path());
   Serial.printf("Add to queue: %s\n", path);
   files.push_back(path);
@@ -226,7 +229,8 @@ void playNext() {
   if (currentFile >= (int)files.size() - 1) {
     Serial.printf("End of queue (%d, %d)\n", currentFile, files.size());
 
-    if (strlen(currentFolder) > 0) {
+    if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile &&
+        strlen(lastTrackFile) > 0) {
       File file = SD.open(lastTrackFile, "w");
       if (file) {
         Serial.printf("clear lastTrackFile\n");
@@ -242,10 +246,11 @@ void playNext() {
   }
 
   currentFile++;
-  char *filepath = files[currentFile];
+  char* filepath = files[currentFile];
 
   // save current track number to SD
-  if (strlen(currentFolder) > 0) {
+  if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile &&
+      strlen(lastTrackFile) > 0) {
     File file = SD.open(lastTrackFile, "w");
     if (file) {
       Serial.printf("Writing track number to '/last.txt'...\n");
@@ -299,7 +304,7 @@ void playFirst() {
   playNext();
 }
 
-void playFileOrFolder(const char *path) {
+void playFileOrFolder(const char* path) {
   Serial.printf("playFileOrFolder(%s)\n", path);
   stop();
   int lastTrack = 0;
@@ -314,8 +319,13 @@ void playFileOrFolder(const char *path) {
   if (root.isDirectory()) {
     addFolderToQueue(root);
 
-    snprintf(currentFolder, 2048, "%s", path);
-    snprintf(lastTrackFile, 2048, "%s%s", path, "/last.txt");
+    if (currentFolder) free(currentFolder);
+    currentFolder = strdup(path);
+
+    if (lastTrackFile) free(lastTrackFile);
+    lastTrackFile = (char*)malloc(strlen(path) + 10);
+    sprintf(lastTrackFile, "%s/last.txt", path);
+
     File file = SD.open(lastTrackFile);
     if (file) {
       Serial.printf("Found '/last.txt' file, checking content...\n");
@@ -329,7 +339,7 @@ void playFileOrFolder(const char *path) {
   root.close();
 
   if (files.size() > 0) {
-    auto cstr_compare = [](const char *s1, const char *s2) {
+    auto cstr_compare = [](const char* s1, const char* s2) {
       return strcmp(s1, s2) < 0;
     };
     sort(files.begin(), files.end(), cstr_compare);
@@ -352,6 +362,7 @@ void playFileOrFolder(const char *path) {
 
 void setup() {
   Serial.begin(115200);
+  Serial.println("revB");
   Serial.println("Setup...");
 
   // LED
@@ -489,14 +500,14 @@ void loop() {
             }
 
             if (record.getTypeLength() != 1 ||
-                ((char *)record.getType())[0] != 'T') {
+                ((char*)record.getType())[0] != 'T') {
               Serial.println("NDEF record has incorrect type.");
               setLED(RGB_Error);
               return;
             }
 
             int payloadLength = record.getPayloadLength();
-            const byte *payload = record.getPayload();
+            const byte* payload = record.getPayload();
 
             int languageLen = (int)payload[0];
             String filePath = "";
