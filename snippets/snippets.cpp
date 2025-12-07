@@ -13,7 +13,7 @@ void printNfcNdefRecords(NdefMessage message) {
     // application processes the payload There's no generic processing
     // for the payload, it's returned as a byte[]
     int payloadLength = record.getPayloadLength();
-    const byte *payload = record.getPayload();
+    const byte* payload = record.getPayload();
 
     // Print the Hex and Printable Characters
     Serial.print("  Payload (HEX): ");
@@ -34,4 +34,21 @@ void printNfcNdefRecords(NdefMessage message) {
       Serial.println(getHexString(record.getId(), record.getIdLength()));
     }
   }
+}
+
+String getHexString(const byte* buffer, byte bufferSize) {
+  String id = "";
+  for (byte i = 0; i < bufferSize; i++) {
+    id += buffer[i] < 0x10 ? "0" : "";
+    id += String(buffer[i], HEX);
+  }
+  return id;
+}
+
+bool compareUid(MFRC522::Uid& uid1, MFRC522::Uid& uid2) {
+  if (uid1.size != uid2.size) return false;
+  for (byte i = 0; i < uid1.size; i++) {
+    if (uid1.uidByte[i] != uid2.uidByte[i]) return false;
+  }
+  return true;
 }
