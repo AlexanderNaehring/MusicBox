@@ -72,13 +72,14 @@ AudioOutputI2S* out_i2s = NULL;
 
 // Player states
 enum class DeviceState {
+  SETUP,        // initial state
   IDLE,         // Waiting for card insertion, nothing in queue
   READING_NFC,  // (New) card detected, reading NFC data
   PLAYING,      // Playing audio from queue, card is inserted
   PAUSED,       // Card removed during playback.
   STOPPED       // Playback finished, wait for card to be removed.
 };
-DeviceState currentState = DeviceState::IDLE;
+DeviceState currentState = DeviceState::SETUP;
 
 std::vector<char*> files{};
 int currentFile = -1;
@@ -106,8 +107,8 @@ void setDeviceState(DeviceState newState) {
   }
 
   // Log transition
-  const char* stateNames[] = {"IDLE", "READING_NFC", "PLAYING", "PAUSED",
-                              "STOPPED"};
+  const char* stateNames[] = {"SETUP",   "IDLE",   "READING_NFC",
+                              "PLAYING", "PAUSED", "STOPPED"};
   Serial.printf("State: %s -> %s\n", stateNames[(int)currentState],
                 stateNames[(int)newState]);
 
@@ -410,9 +411,8 @@ void setup() {
   spi_1.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   Serial.println("SD...");
   if (!SD.begin(SD_CS, spi_1)) {
-    Serial.println("Card Mount Failed");
-    while (1) {
-    }
+    Serial.println("Error: Card Mount Failed");
+    return;
   }
 
   // RFID - NFC
@@ -432,8 +432,8 @@ void setup() {
 
   mp3 = new AudioGeneratorMP3();
 
-  Serial.println("Waiting for RFID...");
-  setLED(RGB_Waiting);
+  Serial.println("Setup ready...");
+  setDeviceState(DeviceState::IDLE);
 }
 
 void loop() {
@@ -590,5 +590,13 @@ void loop() {
       }
       // While card is still in, just wait - do nothing
       break;
+
+    /////////////////////////////////////////////////////////////////////////////////
+    case DeviceState::SETUP:
+      Serial.println("ERROR - invalid state SETUP during loop()");
+      setDeviceState(DeviceState::IDLE);
+      setLED(RGB_Error);
+      while (1) {
+      }
   }
 }
