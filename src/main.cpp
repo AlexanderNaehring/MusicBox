@@ -13,6 +13,7 @@
 #include "MFRC522.h"
 #include "NfcAdapter.h"
 #include "OneButton.h"
+#include "git_info.h"
 
 #define DEBUG true
 #define D_LOG \
@@ -107,10 +108,8 @@ void setDeviceState(DeviceState newState) {
   }
 
   // Log transition
-  const char* stateNames[] = {"SETUP",   "IDLE",   "READING_NFC",
-                              "PLAYING", "PAUSED", "STOPPED"};
-  Serial.printf("State: %s -> %s\n", stateNames[(int)currentState],
-                stateNames[(int)newState]);
+  const char* stateNames[] = {"SETUP", "IDLE", "READING_NFC", "PLAYING", "PAUSED", "STOPPED"};
+  Serial.printf("State: %s -> %s\n", stateNames[(int)currentState], stateNames[(int)newState]);
 
   // Update state
   currentState = newState;
@@ -162,8 +161,7 @@ void re_init_audio_source(bool deleteSources = true) {
   Serial.printf(" create sources if required...");
   if (!source_sd) source_sd = new AudioFileSourceSD();
   if (!source_buffer)
-    source_buffer =
-        new AudioFileSourceBuffer(source_sd, AUDIO_SOURCE_BUFFER_SIZE);
+    source_buffer = new AudioFileSourceBuffer(source_sd, AUDIO_SOURCE_BUFFER_SIZE);
   // ID3 file source for MP3 files reduces the delay until playback starts, and
   // enabled ID3 Tag callbacks
   if (!source_id3) source_id3 = new AudioFileSourceID3(source_buffer);
@@ -256,8 +254,7 @@ void playNext() {
   if (currentFile >= (int)files.size() - 1) {
     Serial.printf("End of queue (%d, %d)\n", currentFile, files.size());
 
-    if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile &&
-        strlen(lastTrackFile) > 0) {
+    if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile && strlen(lastTrackFile) > 0) {
       File file = SD.open(lastTrackFile, "w");
       if (file) {
         Serial.printf("clear lastTrackFile\n");
@@ -274,8 +271,7 @@ void playNext() {
   char* filepath = files[currentFile];
 
   // save current track number to SD
-  if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile &&
-      strlen(lastTrackFile) > 0) {
+  if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile && strlen(lastTrackFile) > 0) {
     File file = SD.open(lastTrackFile, "w");
     if (file) {
       Serial.printf("Writing track number to '/last.txt'...\n");
@@ -363,9 +359,7 @@ void playFileOrFolder(const char* path) {
   root.close();
 
   if (files.size() > 0) {
-    auto cstr_compare = [](const char* s1, const char* s2) {
-      return strcmp(s1, s2) < 0;
-    };
+    auto cstr_compare = [](const char* s1, const char* s2) { return strcmp(s1, s2) < 0; };
     sort(files.begin(), files.end(), cstr_compare);
     Serial.printf("Queue:\n");
     for (auto x : files) {
@@ -386,7 +380,9 @@ void playFileOrFolder(const char* path) {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("revB");
+  Serial.println("Welcome to MusicBox");
+  Serial.printf("Built from git commit %s on %s at %s\n", GIT_COMMIT, __DATE__, __TIME__);
+
   Serial.println("Setup...");
 
   // LED
@@ -526,8 +522,7 @@ void loop() {
             break;
           }
 
-          if (record.getTypeLength() != 1 ||
-              ((char*)record.getType())[0] != 'T') {
+          if (record.getTypeLength() != 1 || ((char*)record.getType())[0] != 'T') {
             Serial.println("NDEF record has incorrect type.");
             setLED(RGB_Error);
             break;
