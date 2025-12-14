@@ -1,156 +1,119 @@
 #include "MusicBoxBLE.h"
 
-// Globals
-BLEServer* pServer = NULL;
-BLECharacteristic* pPlaybackChar = NULL;
-BLECharacteristic* pControlChar = NULL;
-BLECharacteristic* pDebugChar = NULL;
-BLECharacteristic* pStateChar = NULL;
+NimBLEServer* pServer = NULL;
+NimBLECharacteristic* pInfoChar = NULL;
+NimBLECharacteristic* pCmdChar = NULL;
+NimBLECharacteristic* pLogChar = NULL;
 
-bool deviceConnected = false;
-bool oldDeviceConnected = false;
-bool debugEnabled = false;  // Default to false to save bandwidth
+bool bleConnected = false;
 
-// --- Server Callback: Handle Connect/Disconnect ---
-class MyServerCallbacks : public BLEServerCallbacks {
-  void onConnect(BLEServer* pServer) {
-    deviceConnected = true;
-    Serial.println("BLE: Device Connected");
+class ServerCallbacks : public NimBLEServerCallbacks {
+  void onConnect(NimBLEServer* pServer) {
+    bleConnected = true;
+    NimBLEDevice::startAdvertising();  // Keep advertising for multi-connect!
+    Serial.println("BLE: Client connected");
   };
 
-  void onDisconnect(BLEServer* pServer) {
-    deviceConnected = false;
-    debugEnabled = false;  // Reset debug on disconnect
-    Serial.println("BLE: Device Disconnected");
+  void onDisconnect(NimBLEServer* pServer) {
+    Serial.println("BLE: Client disconnected");
+    if (pServer->getConnectedCount() == 0) {
+      bleConnected = false;
+    }
   }
 };
 
-// --- Characteristic Callback: Handle Incoming Commands ---
-class MyCallbacks : public BLECharacteristicCallbacks {
-  void onWrite(BLECharacteristic* pCharacteristic) {
-    String value = pCharacteristic->getValue();
-
-    if (value.length() > 0) {
-      String command = value;
-      Serial.print("BLE Received: ");
-      Serial.println(command);
-
-      // --- Command Parsing ---
-      if (command == "NEXT") {
-        onCommandNext();
-      } else if (command == "PREV") {
-        onCommandPrev();
-      } else if (command.startsWith("VOL:")) {
-        int newVol = command.substring(4).toInt();
-        onCommandVolume(newVol);
-      } else if (command == "DEBUG_START") {
-        debugEnabled = true;
-        sendBleDebugLog("Debug logging enabled on device.");
-      } else if (command == "DEBUG_STOP") {
-        sendBleDebugLog("Stopping debug logging...");
-        debugEnabled = false;
-      } else if (command == "CMD:TREE") {
-        onCommandDebugTree();
-      } else if (command == "CMD:REBOOT") {
-        onCommandReboot();
-      }
+class CmdCallbacks : public NimBLECharacteristicCallbacks {
+  void onWrite(NimBLECharacteristic* pChar) {
+    String cmd = pChar->getValue().c_str();
+    if (cmd.length() > 0) {
+      if (onBleCommand) onBleCommand(cmd);  // Forward to main.cpp
     }
   }
 };
 
 void setupBLE(String deviceName) {
-  BLEDevice::init(deviceName.c_str());
+  NimBLEDevice::init(deviceName.c_str());
 
-  pServer = BLEDevice::createServer();
-  pServer->setCallbacks(new MyServerCallbacks());
+  // high power = better range, but less battery life
+  NimBLEDevice::setPower(ESP_PWR_LVL_N0);  // ESP_PWR_LVL_P9
 
-  // Create the Service
-  BLEService* pService = pServer->createService(SERVICE_UUID);
+  pServer = NimBLEDevice::createServer();
+  pServer->setCallbacks(new ServerCallbacks());
 
-  // 1. Playback Characteristic (Notify)
-  pPlaybackChar =
-      pService->createCharacteristic(CHAR_PLAYBACK_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  pPlaybackChar->addDescriptor(new BLE2902());
+  NimBLEService* pService = pServer->createService(SERVICE_UUID);
 
-  // 2. Control Characteristic (Write)
-  pControlChar =
-      pService->createCharacteristic(CHAR_CONTROL_UUID, BLECharacteristic::PROPERTY_WRITE);
-  pControlChar->setCallbacks(new MyCallbacks());
+  // 1. INFO Char (Notify only)
+  pInfoChar = pService->createCharacteristic(CHAR_INFO_UUID,
+                                             NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
-  // 3. Debug Characteristic (Notify)
-  pDebugChar = pService->createCharacteristic(CHAR_DEBUG_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  pDebugChar->addDescriptor(new BLE2902());
+  // 2. LOG Char (Notify only)
+  pLogChar = pService->createCharacteristic(CHAR_LOG_UUID,
+                                            NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY);
 
-  // 4. State Characteristic (Notify)
-  pStateChar = pService->createCharacteristic(CHAR_STATE_UUID, BLECharacteristic::PROPERTY_NOTIFY);
-  pStateChar->addDescriptor(new BLE2902());
+  // 3. CMD Char (Write only)
+  pCmdChar = pService->createCharacteristic(CHAR_CMD_UUID, NIMBLE_PROPERTY::WRITE);
+  pCmdChar->setCallbacks(new CmdCallbacks());
 
-  // Start the service
   pService->start();
 
-  // Start advertising
-  BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
+  NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
-  pAdvertising->setScanResponse(false);
-  pAdvertising->setMinPreferred(0x0);
-  BLEDevice::startAdvertising();
+  pAdvertising->setScanResponse(true);
+  pAdvertising->start();
 
-  Serial.println("BLE: Waiting for a client connection to notify...");
+  Serial.println("BLE: Service started & Advertising");
 }
 
 void loopBLE() {
-  // Handle reconnection logic if needed (ESP32 BLE quirks)
-  if (!deviceConnected && oldDeviceConnected) {
-    delay(100);                   // Give the bluetooth stack the chance to get things ready
-    pServer->startAdvertising();  // Restart advertising
-    Serial.println("BLE: Restarting advertising");
-    oldDeviceConnected = deviceConnected;
-  }
-  // Connection established
-  if (deviceConnected && !oldDeviceConnected) {
-    oldDeviceConnected = deviceConnected;
-  }
+  // NimBLE handles housekeeping mostly automatically
 }
 
-// --- Sender Functions ---
+void sendBleInfo(String state, int batteryPct, String folder, String file, int trackIdx,
+                 int trackTotal) {
+  // Keep cached last-known values so callers don't need to send everything each time
+  static String lastState = "";
+  static int lastBatteryPct = -1;
+  static String lastFolder = "";
+  static String lastFile = "";
+  static int lastTrackIdx = -1;
+  static int lastTrackTotal = -1;
 
-void sendBlePlaybackInfo(int track, int total, String file, int volume) {
-  if (deviceConnected) {
-    // Construct JSON manually: {"track":1, "total":10, "file":"song.mp3", "volume":50}
-    // Note: Escaping quotes with \"
+  if (pServer->getConnectedCount() > 0) {
+    // Update cached values only when callers provide them. The function signature uses
+    // sentinel defaults (empty string or -1) to indicate "not provided".
+    if (state.length() > 0) lastState = state;
+    if (batteryPct != -1) lastBatteryPct = batteryPct;
+    if (folder.length() > 0) lastFolder = folder;
+    if (file.length() > 0) lastFile = file;
+    if (trackIdx >= 0) lastTrackIdx = trackIdx;
+    if (trackTotal >= 0) lastTrackTotal = trackTotal;
+
+    // Construct JSON from the cached values
+    // Example: {"s":"PLAYING","b":85,"fo":"Abba","fi":"DancingQueen.mp3","i":1,"n":12}
     String json = "{";
-    json += "\"track\":" + String(track) + ",";
-    json += "\"total\":" + String(total) + ",";
-    json += "\"file\":\"" + file + "\",";
-    json += "\"volume\":" + String(volume);
+    json += "\"s\":\"" + lastState + "\",";
+    json += "\"b\":" + String(lastBatteryPct);
+
+    // Only add track info if we actually have a file cached
+    if (lastFile.length() > 0 && (state == "PLAYING" || state == "PAUSED")) {
+      json += ",\"fo\":\"" + lastFolder + "\",";
+      json += "\"fi\":\"" + lastFile + "\",";
+      json += "\"i\":" + String(lastTrackIdx) + ",";
+      json += "\"n\":" + String(lastTrackTotal);
+    }
+
     json += "}";
 
-    pPlaybackChar->setValue((uint8_t*)json.c_str(), json.length());
-    pPlaybackChar->notify();
+    Serial.println("BLE: Sending Info: " + json);
+
+    pInfoChar->setValue(json);
+    pInfoChar->notify();
   }
 }
 
-void sendBleStateInfo(String state, int uptime) {
-  if (deviceConnected) {
-    // Construct JSON: {"state":"PLAYING", "heap":12345, "uptime":100}
-    String json = "{";
-    json += "\"state\":\"" + state + "\",";
-    json += "\"heap\":" + String(ESP.getFreeHeap()) + ",";
-    json += "\"uptime\":" + String(uptime);
-    json += "}";
-
-    pStateChar->setValue((uint8_t*)json.c_str(), json.length());
-    pStateChar->notify();
-  }
-}
-
-void sendBleDebugLog(String message) {
-  // Only send if connected AND enabled via the "DEBUG_START" command
-  if (deviceConnected && debugEnabled) {
-    // Limit message size if necessary (BLE MTU default is 23 bytes, but libraries handle splitting
-    // often) Ideally keep strings under 20 chars if MTU isn't negotiated, but ESP32 usually handles
-    // more.
-    pDebugChar->setValue((uint8_t*)message.c_str(), message.length());
-    pDebugChar->notify();
+void sendBleLog(String message) {
+  if (pServer->getConnectedCount() > 0) {
+    pLogChar->setValue(message);
+    pLogChar->notify();
   }
 }

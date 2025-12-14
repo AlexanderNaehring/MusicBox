@@ -17,8 +17,11 @@
 #include "git_info.h"
 
 #define DEBUG true
-#define D_LOG \
-  if (DEBUG) Serial
+
+void debugPrint(String msg) {
+  if (DEBUG) Serial.println(msg);
+  sendBleLog(msg + String("\n"));
+}
 
 // Button inputs
 #define BTN_CARD_INSIDE 17
@@ -157,7 +160,7 @@ void setDeviceState(DeviceState newState) {
       break;
   }
 
-  sendBleStateInfo(currentDeviceState(), millis() / 1000);
+  sendBleInfo(currentDeviceState(newState));
 }
 
 void re_init_audio_source(bool deleteSources = true) {
@@ -311,7 +314,8 @@ void playNext() {
   lastPlayMillis = millis();
   setDeviceState(DeviceState::PLAYING);
 
-  sendBlePlaybackInfo(currentFile + 1, (int)files.size(), String(filepath), 0);
+  sendBleInfo(currentDeviceState(), 100, String(currentFolder), String(filepath), currentFile + 1,
+              (int)files.size());
 }
 
 void playPrev() {
@@ -463,15 +467,6 @@ void setup() {
 
 void loop() {
   unsigned long now = millis();
-
-  loopBLE();
-  // 2. Periodic Status Update (e.g., every 2 seconds)
-  if (now - lastStateUpdate > 2000) {
-    lastStateUpdate = now;
-    // Send heartbeat/state info
-    Serial.println("BLE: Sending periodic state info");
-    sendBleStateInfo(currentDeviceState(), now / 1000);
-  }
 
   // update buttons
   btnNext.tick();
@@ -635,45 +630,28 @@ void loop() {
   }
 }
 
-void onCommandNext() {
-  Serial.println("CMD: Next Track");
+void onBleCommand(String command) {
+  debugPrint("BLE CMD Rx: " + command);
 
-  if (currentState != DeviceState::PLAYING) {
-    Serial.println("Not playing, cannot go to next track");
-    return;
+  if (command == "CMD:NEXT") {
+    if (currentState == DeviceState::PLAYING || currentState == DeviceState::PAUSED) playNext();
+  } else if (command == "CMD:PREV") {
+    if (currentState == DeviceState::PLAYING || currentState == DeviceState::PAUSED) playPrev();
+  } else if (command == "CMD:RESTART") {
+    debugPrint("Rebooting...");
+    delay(500);
+    ESP.restart();
+  } else if (command == "CMD:DIAG") {
+    debugPrint("--- DIAGNOSTICS ---");
+    debugPrint("Uptime: " + String(millis() / 1000) + "s");
+    debugPrint("Heap Free: " + String(ESP.getFreeHeap()));
+    debugPrint("Build: " + String(GIT_COMMIT) + " at " + String(__DATE__) + " at " +
+               String(__TIME__));
+  } else if (command == "CMD:TREE") {
+    debugPrint("--- FILE TREE ---");
+    // File root = SD.open("/");
+    // printDirectory(root, 0);
+    // root.close();
+    debugPrint("--- END TREE ---");
   }
-  sendBleDebugLog("Executing Next Track...");
-  playNext();
-}
-
-void onCommandPrev() {
-  Serial.println("CMD: Prev Track");
-
-  if (currentState != DeviceState::PLAYING) {
-    Serial.println("Not playing, cannot go to next track");
-    return;
-  }
-  sendBleDebugLog("Executing Next Track...");
-  playPrev();
-}
-
-void onCommandVolume(int volume) {
-  // not implemented yet
-}
-
-void onCommandDebugTree() {
-  Serial.println("CMD: Dump File Tree");
-  // Send a burst of debug messages
-  sendBleDebugLog("ROOT");
-  sendBleDebugLog("|- Folder A");
-  sendBleDebugLog("   |- song1.mp3");
-  sendBleDebugLog("   |- song2.mp3");
-  sendBleDebugLog("|- Folder B");
-}
-
-void onCommandReboot() {
-  Serial.println("CMD: Rebooting...");
-  sendBleDebugLog("Rebooting device...");
-  delay(500);
-  ESP.restart();
 }
