@@ -11,6 +11,7 @@
 #include "AudioOutputI2S.h"
 #include "ESP32Encoder.h"
 #include "MFRC522.h"
+#include "MusicBoxBLE.h"
 #include "NfcAdapter.h"
 #include "OneButton.h"
 #include "git_info.h"
@@ -87,6 +88,7 @@ int currentFile = -1;
 char* currentFolder = nullptr;
 char* lastTrackFile = nullptr;
 unsigned long lastPlayMillis = 0;
+unsigned long lastStateUpdate = 0;
 
 unsigned long last_rfid_check_time;
 #define RFID_CHECK_INTERVAL 50
@@ -100,6 +102,25 @@ void setLED(uint8_t red, uint8_t green, uint8_t blue) {
   analogWrite(LED_R, 255 - red);
   analogWrite(LED_G, 255 - green);
   analogWrite(LED_B, 255 - blue);
+}
+
+String currentDeviceState(DeviceState state = currentState) {
+  switch (state) {
+    case DeviceState::SETUP:
+      return "SETUP";
+    case DeviceState::IDLE:
+      return "IDLE";
+    case DeviceState::READING_NFC:
+      return "READING_NFC";
+    case DeviceState::PLAYING:
+      return "PLAYING";
+    case DeviceState::PAUSED:
+      return "PAUSED";
+    case DeviceState::STOPPED:
+      return "STOPPED";
+    default:
+      return "UNKNOWN";
+  }
 }
 
 void setDeviceState(DeviceState newState) {
@@ -135,6 +156,8 @@ void setDeviceState(DeviceState newState) {
       setLED(RGB_Error);
       break;
   }
+
+  sendBleStateInfo(currentDeviceState(), millis() / 1000);
 }
 
 void re_init_audio_source(bool deleteSources = true) {
@@ -287,6 +310,8 @@ void playNext() {
   mp3->begin(source_id3, out_i2s);
   lastPlayMillis = millis();
   setDeviceState(DeviceState::PLAYING);
+
+  sendBlePlaybackInfo(currentFile + 1, (int)files.size(), String(filepath), 0);
 }
 
 void playPrev() {
@@ -428,12 +453,25 @@ void setup() {
 
   mp3 = new AudioGeneratorMP3();
 
+  // BLE
+  Serial.println("BLE...");
+  setupBLE("MusicBox");
+
   Serial.println("Setup ready...");
   setDeviceState(DeviceState::IDLE);
 }
 
 void loop() {
   unsigned long now = millis();
+
+  loopBLE();
+  // 2. Periodic Status Update (e.g., every 2 seconds)
+  if (now - lastStateUpdate > 2000) {
+    lastStateUpdate = now;
+    // Send heartbeat/state info
+    Serial.println("BLE: Sending periodic state info");
+    sendBleStateInfo(currentDeviceState(), now / 1000);
+  }
 
   // update buttons
   btnNext.tick();
@@ -595,4 +633,47 @@ void loop() {
       delay(10000);
       ESP.restart();
   }
+}
+
+void onCommandNext() {
+  Serial.println("CMD: Next Track");
+
+  if (currentState != DeviceState::PLAYING) {
+    Serial.println("Not playing, cannot go to next track");
+    return;
+  }
+  sendBleDebugLog("Executing Next Track...");
+  playNext();
+}
+
+void onCommandPrev() {
+  Serial.println("CMD: Prev Track");
+
+  if (currentState != DeviceState::PLAYING) {
+    Serial.println("Not playing, cannot go to next track");
+    return;
+  }
+  sendBleDebugLog("Executing Next Track...");
+  playPrev();
+}
+
+void onCommandVolume(int volume) {
+  // not implemented yet
+}
+
+void onCommandDebugTree() {
+  Serial.println("CMD: Dump File Tree");
+  // Send a burst of debug messages
+  sendBleDebugLog("ROOT");
+  sendBleDebugLog("|- Folder A");
+  sendBleDebugLog("   |- song1.mp3");
+  sendBleDebugLog("   |- song2.mp3");
+  sendBleDebugLog("|- Folder B");
+}
+
+void onCommandReboot() {
+  Serial.println("CMD: Rebooting...");
+  sendBleDebugLog("Rebooting device...");
+  delay(500);
+  ESP.restart();
 }
