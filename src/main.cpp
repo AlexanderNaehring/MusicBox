@@ -591,7 +591,8 @@ void loop() {
       Serial.println("ERROR - invalid state SETUP during loop()");
       setDeviceState(DeviceState::IDLE);
       setLED(RGB_Error);
-      while (1) {
-      }
+      Serial.println("Restarting in 10 seconds...");
+      delay(10000);
+      ESP.restart();
   }
 }
