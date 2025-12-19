@@ -1,6 +1,7 @@
 #define DEBUG true
 #define HW_REV 1
 #define BLE false
+#define WIFI true
 
 #include <Arduino.h>
 #include <SPI.h>
@@ -28,6 +29,10 @@
 
 #if BLE
 #include "MusicBoxBLE.h"
+#endif
+
+#if WIFI
+#include "MusicBoxWiFi.h"
 #endif
 
 void debugPrint(String msg) {
@@ -106,6 +111,7 @@ unsigned long lastBatteryCheck = 0;
 #define RGB_Pause 200, 200, 0
 
 // OneButton
+// activeLow=true, pullupActive=false
 OneButton btnNext(BTN_NEXT, true, false);
 OneButton btnPrev(BTN_PREV, true, false);
 // Rotary Encoder
@@ -525,7 +531,7 @@ void setup() {
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
   btnNext.attachClick(playNext);
   btnPrev.attachClick(playPrev);
-  btnPrev.attachLongPressStart(playFirst);
+  // btnPrev.attachLongPressStart(playFirst);
 
   // Rotary
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
@@ -581,6 +587,14 @@ void setup() {
   setupBLE("MusicBox");
 #endif
 
+// WIFI
+#if WIFI
+  if (digitalRead(BTN_PREV) == LOW) {
+    Serial.println("WIFI setup mode");
+    setupWifi();
+  }
+#endif
+
   Serial.println("Setup ready...");
   setDeviceState(DeviceState::IDLE);
 }
@@ -614,6 +628,10 @@ void loop() {
   }
 
   bool cardPresent = (digitalRead(BTN_CARD_INSIDE) == LOW);
+
+#if WIFI
+  loopWifi();
+#endif
 
   switch (currentState) {
       /////////////////////////////////////////////////////////////////////////////////
