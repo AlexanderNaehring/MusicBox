@@ -1,79 +1,124 @@
+#define DEBUG true
+#define HW_REV 1
+#define BLE false
+
 #include <Arduino.h>
-#include <SD.h>
 #include <SPI.h>
 
 #include <vector>
 
+#if HW_REV == 1
+#include <SD.h>
+#elif HW_REV == 2
+#include <SD_MMC.h>
+#endif
+
 #include "AudioFileSourceBuffer.h"
+#include "AudioFileSourceFS.h"
 #include "AudioFileSourceID3.h"
-#include "AudioFileSourceSD.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
 #include "ESP32Encoder.h"
 #include "MFRC522.h"
-#include "MusicBoxBLE.h"
 #include "NfcAdapter.h"
 #include "OneButton.h"
 #include "git_info.h"
 
-#define DEBUG true
+#if BLE
+#include "MusicBoxBLE.h"
+#endif
 
 void debugPrint(String msg) {
   if (DEBUG) Serial.println(msg);
+#if BLE
   sendBleLog(msg + String("\n"));
+#endif
 }
 
+// PINOUT definitions based on hardware revision
+#if HW_REV == 1
 // Button inputs
 #define BTN_CARD_INSIDE 17
-OneButton btnNext(35, true, false);
-OneButton btnPrev(34, true, false);
-
+#define BTN_NEXT 35
+#define BTN_PREV 34
 // Encoder
 #define RotaryA 33
 #define RotaryB 32
-ESP32Encoder rotaryGain;
-
 // RGB LED
 #define LED_R 4
 #define LED_G 27
 #define LED_B 16
+// SD (VSPI)
+#define SD_MOSI 23
+#define SD_MISO 19
+#define SD_SCK 18
+#define SD_CS 5
+// RFID (HSPI)
+#define RFID_MOSI 13
+#define RFID_MISO 12
+#define RFID_SCK 14
+#define RFID_CS 15
+// SPI
+SPIClass spi_sd(VSPI);
+SPIClass spi_rfid(HSPI);
 
+#elif HW_REV == 2
+// Button inputs
+#define BTN_CARD_INSIDE 17
+#define BTN_NEXT 35
+#define BTN_PREV 34
+// Encoder
+#define RotaryA 33
+#define RotaryB 32
+// RGB LED
+#define LED_R 21
+#define LED_G 27
+#define LED_B 16
+// SD (MMC 1bit mode)
+#define SD_CMD 15
+#define SD_CLK 14
+#define SD_DATA0 2
+#define SD_DATA1 4
+#define SD_DATA2 12
+#define SD_DATA3 13
+//  RFID (VSPI)
+#define RFID_MOSI 23
+#define RFID_MISO 19
+#define RFID_SCK 18
+#define RFID_CS 5
+// SPI
+SPIClass spi_rfid(VSPI);
+
+#endif
+
+// General stuff
+#define MAX_UID_LEN 10
+// Color tuples
 #define RGB_Waiting 200, 200, 200
 #define RGB_Error 200, 0, 0
 #define RGB_Play 0, 200, 0
 #define RGB_Pause 200, 200, 0
 
-// SPI
-SPIClass spi_1(VSPI);
-SPIClass spi_2(HSPI);
-
-// SD card
-#define SD_MOSI 23
-#define SD_MISO 19
-#define SD_SCK 18
-#define SD_CS 5
-
+// OneButton
+OneButton btnNext(BTN_NEXT, true, false);
+OneButton btnPrev(BTN_PREV, true, false);
+// Rotary Encoder
+ESP32Encoder rotaryGain;
 // RFID
-#define RFID_MOSI 13
-#define RFID_MISO 12
-#define RFID_SCK 14
-#define RFID_CS 15
-MFRC522 mfrc522(RFID_CS, UINT8_MAX, spi_2);
+MFRC522 mfrc522(RFID_CS, UINT8_MAX, spi_rfid);
 NfcAdapter nfc = NfcAdapter(&mfrc522);
-
 // ESP8266Audio
 #define MinAudioGain 1
 #define InitialAudioGain 8
 #define MaxAudioGain 50
 #define AUDIO_SOURCE_BUFFER_SIZE 1024 * 4
-AudioFileSourceSD* source_sd = NULL;
+AudioFileSourceFS* source_fs = NULL;
 AudioFileSourceBuffer* source_buffer = NULL;
 AudioFileSourceID3* source_id3 = NULL;
 AudioGeneratorMP3* mp3 = NULL;
 AudioOutputI2S* out_i2s = NULL;
-
-// General stuff
-#define MAX_UID_LEN 10
+// Filesystem
+fs::FS* filesystem = NULL;
 
 // Player states
 enum class DeviceState {
@@ -82,7 +127,8 @@ enum class DeviceState {
   READING_NFC,  // (New) card detected, reading NFC data
   PLAYING,      // Playing audio from queue, card is inserted
   PAUSED,       // Card removed during playback.
-  STOPPED       // Playback finished, wait for card to be removed.
+  STOPPED,      // Playback finished, wait for card to be removed.
+  ERROR         // ERROR state
 };
 DeviceState currentState = DeviceState::SETUP;
 
@@ -121,8 +167,10 @@ String currentDeviceState(DeviceState state = currentState) {
       return "PAUSED";
     case DeviceState::STOPPED:
       return "STOPPED";
+    case DeviceState::ERROR:
+      return "ERROR";
     default:
-      return "UNKNOWN";
+      return "UNKNOWN/ERROR";
   }
 }
 
@@ -159,8 +207,9 @@ void setDeviceState(DeviceState newState) {
       setLED(RGB_Error);
       break;
   }
-
+#if BLE
   sendBleInfo(currentDeviceState(newState));
+#endif
 }
 
 void re_init_audio_source(bool deleteSources = true) {
@@ -170,9 +219,9 @@ void re_init_audio_source(bool deleteSources = true) {
 
   if (deleteSources) {
     Serial.printf(" delete sources...");
-    if (source_sd) {
-      delete source_sd;
-      source_sd = NULL;
+    if (source_fs) {
+      delete source_fs;
+      source_fs = NULL;
     }
     if (source_buffer) {
       delete source_buffer;
@@ -185,9 +234,9 @@ void re_init_audio_source(bool deleteSources = true) {
   }
 
   Serial.printf(" create sources if required...");
-  if (!source_sd) source_sd = new AudioFileSourceSD();
+  if (!source_fs) source_fs = new AudioFileSourceFS(*filesystem);
   if (!source_buffer)
-    source_buffer = new AudioFileSourceBuffer(source_sd, AUDIO_SOURCE_BUFFER_SIZE);
+    source_buffer = new AudioFileSourceBuffer(source_fs, AUDIO_SOURCE_BUFFER_SIZE);
   // ID3 file source for MP3 files reduces the delay until playback starts, and
   // enabled ID3 Tag callbacks
   if (!source_id3) source_id3 = new AudioFileSourceID3(source_buffer);
@@ -281,7 +330,7 @@ void playNext() {
     Serial.printf("End of queue (%d, %d)\n", currentFile, files.size());
 
     if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile && strlen(lastTrackFile) > 0) {
-      File file = SD.open(lastTrackFile, "w");
+      File file = filesystem->open(lastTrackFile, "w");
       if (file) {
         Serial.printf("clear lastTrackFile\n");
         file.printf("0");
@@ -298,7 +347,7 @@ void playNext() {
 
   // save current track number to SD
   if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile && strlen(lastTrackFile) > 0) {
-    File file = SD.open(lastTrackFile, "w");
+    File file = filesystem->open(lastTrackFile, "w");
     if (file) {
       Serial.printf("Writing track number to '/last.txt'...\n");
       file.printf("%d", currentFile);
@@ -308,14 +357,16 @@ void playNext() {
 
   // start playback
   re_init_audio_source();
-  source_sd->open(filepath);
+  source_fs->open(filepath);
   Serial.printf("mp3->begin() %s\n", filepath);
   mp3->begin(source_id3, out_i2s);
   lastPlayMillis = millis();
   setDeviceState(DeviceState::PLAYING);
 
+#if BLE
   sendBleInfo(currentDeviceState(), 100, String(currentFolder), String(filepath), currentFile + 1,
               (int)files.size());
+#endif
 }
 
 void playPrev() {
@@ -358,7 +409,7 @@ void playFileOrFolder(const char* path) {
   stop();
   int lastTrack = 0;
 
-  File root = SD.open(path);
+  File root = filesystem->open(path);
   if (!root) {
     Serial.printf("Failed to open %s\n", path);
     setLED(RGB_Error);
@@ -375,7 +426,7 @@ void playFileOrFolder(const char* path) {
     lastTrackFile = (char*)malloc(strlen(path) + 10);
     sprintf(lastTrackFile, "%s/last.txt", path);
 
-    File file = SD.open(lastTrackFile);
+    File file = filesystem->open(lastTrackFile);
     if (file) {
       Serial.printf("Found '/last.txt' file, checking content...\n");
       lastTrack = file.parseInt();
@@ -432,17 +483,26 @@ void setup() {
   rotaryGain.setCount(InitialAudioGain);
 
   // SD card
+#if HW_REV == 1
   Serial.println("SD_SPI...");
-  spi_1.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
+  spi_sd.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   Serial.println("SD...");
-  if (!SD.begin(SD_CS, spi_1)) {
+  if (!SD.begin(SD_CS, spi_sd)) {
     Serial.println("Error: Card Mount Failed");
     return;
   }
-
+  filesystem = &SD;
+#elif HW_REV == 2
+  Serial.println("SD_MMC...");
+  if (!SD_MMC.begin("/sdcard", true)) {
+    Serial.println("Error: Card Mount Failed");
+    return;
+  }
+  filesystem = &SD_MMC;
+#endif
   // RFID - NFC
   Serial.println("RFID...");
-  spi_2.begin(RFID_SCK, RFID_MISO, RFID_MOSI, RFID_CS);
+  spi_rfid.begin(RFID_SCK, RFID_MISO, RFID_MOSI, RFID_CS);
   mfrc522.PCD_Init();
   mfrc522.PCD_DumpVersionToSerial();
   nfc.begin();
@@ -457,9 +517,11 @@ void setup() {
 
   mp3 = new AudioGeneratorMP3();
 
-  // BLE
+// BLE
+#if BLE
   Serial.println("BLE...");
   setupBLE("MusicBox");
+#endif
 
   Serial.println("Setup ready...");
   setDeviceState(DeviceState::IDLE);
@@ -620,16 +682,20 @@ void loop() {
       break;
 
     /////////////////////////////////////////////////////////////////////////////////
-    case DeviceState::SETUP:
-      Serial.println("ERROR - invalid state SETUP during loop()");
-      setDeviceState(DeviceState::IDLE);
+    case DeviceState::ERROR:
+      Serial.println("ERROR STATE - restarting in 10 seconds...");
       setLED(RGB_Error);
-      Serial.println("Restarting in 10 seconds...");
       delay(10000);
       ESP.restart();
+    /////////////////////////////////////////////////////////////////////////////////
+    case DeviceState::SETUP:
+      Serial.println("ERROR - invalid state SETUP during loop()");
+    default:
+      setDeviceState(DeviceState::ERROR);
   }
 }
 
+#if BLE
 void onBleCommand(String command) {
   debugPrint("BLE CMD Rx: " + command);
 
@@ -649,9 +715,10 @@ void onBleCommand(String command) {
                String(__TIME__));
   } else if (command == "CMD:TREE") {
     debugPrint("--- FILE TREE ---");
-    // File root = SD.open("/");
-    // printDirectory(root, 0);
+    // File root = filesystem->open("/");
+    // print...
     // root.close();
     debugPrint("--- END TREE ---");
   }
 }
+#endif
