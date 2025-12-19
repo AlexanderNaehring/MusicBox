@@ -7,17 +7,19 @@
 
 const char* host = "MusicBox";
 
-WebServer httpServer(80);
-HTTPUpdateServer httpUpdater;
+AsyncWebServer webServer(80);
+ESPAsyncHTTPUpdateServer updateServer;
+
 WifiState wifiState = WifiState::Setup;
 
 void setupWifi(void) { wifiState = WifiState::Setup; }
 
 void shutdownWifi(void) {
   Serial.println("Shutting down WiFi...");
-  httpServer.close();
+  webServer.end();
   MDNS.end();
   WiFi.disconnectAsync(true);
+  WiFi.mode(WIFI_OFF);
   wifiState = WifiState::Idle;
 }
 
@@ -36,8 +38,8 @@ void loopWifi(void) {
         if (MDNS.begin(host)) {
           Serial.println("mDNS responder started");
         }
-        httpUpdater.setup(&httpServer, "/update");
-        httpServer.begin();
+        updateServer.setup(&webServer, "/update");
+        webServer.begin();
         MDNS.addService("http", "tcp", 80);
         Serial.printf("HTTPUpdateServer ready! Open http://%s.local/update in your browser\n",
                       host);
@@ -45,7 +47,7 @@ void loopWifi(void) {
       }
       break;
     case WifiState::Listening:
-      httpServer.handleClient();
+
       break;
     default:
       Serial.println("Unknown WiFi state!");
