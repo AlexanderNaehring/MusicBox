@@ -14,9 +14,49 @@
 void setupBLE(String deviceName);
 void loopBLE();  // Call this in main loop for periodic state updates
 
-// Functions to send data to the App
-void sendBleInfo(String state = "", int batteryPct = -1, String folder = "", String file = "",
-                 int trackIdx = -1, int trackTotal = -1);
+// BLE info manager: cache device info and send updates.
+// Usage:
+//   bleInfo.setState("PLAYING"); // sends update immediately if not batching
+//   bleInfo.beginUpdate();
+//   bleInfo.setFolder("Abba", false);
+//   bleInfo.setFile("DancingQueen.mp3", false);
+//   bleInfo.setTrackIdx(1, false);
+//   bleInfo.setTrackTotal(12, false);
+//   bleInfo.endUpdate(); // sends single update with all changes
+class BleInfo {
+ public:
+  BleInfo();
+  void beginUpdate();
+  void endUpdate();
+  void send();  // explicit send
+
+  void setState(const String& state, bool sendImmediately = true);
+  void setBatteryPct(int batteryPct, bool sendImmediately = true);
+  void setFolder(const String& folder, bool sendImmediately = true);
+  void setFile(const String& file, bool sendImmediately = true);
+  void setTrackIdx(int idx, bool sendImmediately = true);
+  void setTrackTotal(int total, bool sendImmediately = true);
+
+  // getters for convenience
+  String getState() const;
+  int getBatteryPct() const;
+  String getFolder() const;
+  String getFile() const;
+  int getTrackIdx() const;
+  int getTrackTotal() const;
+
+ private:
+  String state_;
+  int batteryPct_;
+  String folder_;
+  String file_;
+  int trackIdx_;
+  int trackTotal_;
+  bool batching_;
+};
+
+extern BleInfo bleInfo;
+
 void sendBleLog(String message);
 
 // Callback to handle incoming commands from the App

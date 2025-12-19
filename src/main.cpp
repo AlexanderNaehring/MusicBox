@@ -181,12 +181,12 @@ String currentDeviceState(DeviceState state = currentState) {
 
 void setDeviceState(DeviceState newState) {
   if (currentState == newState) {
-    return;  // Already in this state
+    return;
   }
 
   // Log transition
-  const char* stateNames[] = {"SETUP", "IDLE", "READING_NFC", "PLAYING", "PAUSED", "STOPPED"};
-  Serial.printf("State: %s -> %s\n", stateNames[(int)currentState], stateNames[(int)newState]);
+  Serial.printf("State: %s -> %s\n", currentDeviceState(currentState),
+                currentDeviceState(newState));
 
   // Update state
   currentState = newState;
@@ -213,7 +213,7 @@ void setDeviceState(DeviceState newState) {
       break;
   }
 #if BLE
-  sendBleInfo(currentDeviceState(newState));
+  bleInfo.setState(currentDeviceState(newState));
 #endif
 }
 
@@ -239,6 +239,9 @@ float readBatteryPct() {
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
 
+#if BLE
+  bleInfo.setBatteryPct(pct);
+#endif
   return pct;
 }
 
@@ -405,8 +408,14 @@ void playNext() {
   setDeviceState(DeviceState::PLAYING);
 
 #if BLE
-  sendBleInfo(currentDeviceState(), 100, String(currentFolder), String(filepath), currentFile + 1,
-              (int)files.size());
+  bleInfo.beginUpdate();
+  bleInfo.setState(currentDeviceState());
+  bleInfo.setBatteryPct(100);
+  bleInfo.setFolder(currentFolder ? String(currentFolder) : String(""));
+  bleInfo.setFile(String(filepath));
+  bleInfo.setTrackIdx(currentFile + 1);
+  bleInfo.setTrackTotal((int)files.size());
+  bleInfo.endUpdate();
 #endif
 }
 

@@ -12,6 +12,7 @@ class ServerCallbacks : public NimBLEServerCallbacks {
     bleConnected = true;
     NimBLEDevice::startAdvertising();  // Keep advertising for multi-connect!
     Serial.println("BLE: Client connected");
+    bleInfo.send();  // Send current state upon connection
   };
 
   void onDisconnect(NimBLEServer* pServer) {
@@ -68,48 +69,98 @@ void loopBLE() {
   // NimBLE handles housekeeping mostly automatically
 }
 
-void sendBleInfo(String state, int batteryPct, String folder, String file, int trackIdx,
-                 int trackTotal) {
-  // Keep cached last-known values so callers don't need to send everything each time
-  static String lastState = "";
-  static int lastBatteryPct = -1;
-  static String lastFolder = "";
-  static String lastFile = "";
-  static int lastTrackIdx = -1;
-  static int lastTrackTotal = -1;
+// Implementation of BleInfo declared in the header.
+BleInfo::BleInfo()
+    : state_(""),
+      batteryPct_(-1),
+      folder_(""),
+      file_(""),
+      trackIdx_(-1),
+      trackTotal_(-1),
+      batching_(false) {}
 
+void BleInfo::beginUpdate() { batching_ = true; }
+void BleInfo::endUpdate() {
+  batching_ = false;
+  send();
+}
+
+void BleInfo::setState(const String& state, bool sendImmediately) {
+  if (state_ != state) {
+    state_ = state;
+    if (sendImmediately && !batching_) send();
+  }
+}
+
+void BleInfo::setBatteryPct(int batteryPct, bool sendImmediately) {
+  if (batteryPct_ != batteryPct) {
+    batteryPct_ = batteryPct;
+    if (sendImmediately && !batching_) send();
+  }
+}
+
+void BleInfo::setFolder(const String& folder, bool sendImmediately) {
+  if (folder_ != folder) {
+    folder_ = folder;
+    if (sendImmediately && !batching_) send();
+  }
+}
+
+void BleInfo::setFile(const String& file, bool sendImmediately) {
+  if (file_ != file) {
+    file_ = file;
+    if (sendImmediately && !batching_) send();
+  }
+}
+
+void BleInfo::setTrackIdx(int idx, bool sendImmediately) {
+  if (trackIdx_ != idx) {
+    trackIdx_ = idx;
+    if (sendImmediately && !batching_) send();
+  }
+}
+
+void BleInfo::setTrackTotal(int total, bool sendImmediately) {
+  if (trackTotal_ != total) {
+    trackTotal_ = total;
+    if (sendImmediately && !batching_) send();
+  }
+}
+
+String BleInfo::getState() const { return state_; }
+int BleInfo::getBatteryPct() const { return batteryPct_; }
+String BleInfo::getFolder() const { return folder_; }
+String BleInfo::getFile() const { return file_; }
+int BleInfo::getTrackIdx() const { return trackIdx_; }
+int BleInfo::getTrackTotal() const { return trackTotal_; }
+
+void BleInfo::send() {
+  if (!pServer) return;
   if (pServer->getConnectedCount() > 0) {
-    // Update cached values only when callers provide them. The function signature uses
-    // sentinel defaults (empty string or -1) to indicate "not provided".
-    if (state.length() > 0) lastState = state;
-    if (batteryPct != -1) lastBatteryPct = batteryPct;
-    if (folder.length() > 0) lastFolder = folder;
-    if (file.length() > 0) lastFile = file;
-    if (trackIdx >= 0) lastTrackIdx = trackIdx;
-    if (trackTotal >= 0) lastTrackTotal = trackTotal;
-
     // Construct JSON from the cached values
-    // Example: {"s":"PLAYING","b":85,"fo":"Abba","fi":"DancingQueen.mp3","i":1,"n":12}
     String json = "{";
-    json += "\"s\":\"" + lastState + "\",";
-    json += "\"b\":" + String(lastBatteryPct);
+    json += "\"s\":\"" + state_ + "\",";
+    json += "\"b\":" + String(batteryPct_);
 
     // Only add track info if we actually have a file cached
-    if (lastFile.length() > 0 && (state == "PLAYING" || state == "PAUSED")) {
-      json += ",\"fo\":\"" + lastFolder + "\",";
-      json += "\"fi\":\"" + lastFile + "\",";
-      json += "\"i\":" + String(lastTrackIdx) + ",";
-      json += "\"n\":" + String(lastTrackTotal);
+    if (file_.length() > 0 && (state_ == "PLAYING" || state_ == "PAUSED")) {
+      json += ",\"fo\":\"" + folder_ + "\",";
+      json += "\"fi\":\"" + file_ + "\",";
+      json += "\"i\":" + String(trackIdx_) + ",";
+      json += "\"n\":" + String(trackTotal_);
     }
-
     json += "}";
 
     Serial.println("BLE: Sending Info: " + json);
 
-    pInfoChar->setValue(json);
-    pInfoChar->notify();
+    if (pInfoChar) {
+      pInfoChar->setValue(json);
+      pInfoChar->notify();
+    }
   }
 }
+
+BleInfo bleInfo;
 
 void sendBleLog(String message) {
   if (pServer->getConnectedCount() > 0) {
