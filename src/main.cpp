@@ -76,7 +76,7 @@ SPIClass spi_rfid(HSPI);
 #define LED_R 21
 #define LED_G 27
 #define LED_B 16
-// SD (MMC 1bit mode)
+// SD (SDIO / MMC mode)
 #define SD_CMD 15
 #define SD_CLK 14
 #define SD_DATA0 2
@@ -262,7 +262,7 @@ void re_init_audio_source(bool deleteSources = true) {
   if (mp3 && mp3->isRunning()) mp3->stop();
 
   if (deleteSources) {
-    Serial.printf(" delete sources...");
+    Serial.printf(" delete audio sources...");
     if (source_fs) {
       delete source_fs;
       source_fs = NULL;
@@ -288,7 +288,7 @@ void re_init_audio_source(bool deleteSources = true) {
   Serial.printf(" done\n");
 }
 
-void stop() {
+void stop(bool setDeviceToStopped = true) {
   Serial.printf("stop()\n");
   if (mp3 && mp3->isRunning()) {
     Serial.printf("   mp3->stop()\n");
@@ -310,7 +310,7 @@ void stop() {
     currentFolder = nullptr;
   }
 
-  setDeviceState(DeviceState::STOPPED);
+  if (setDeviceToStopped) setDeviceState(DeviceState::STOPPED);
 }
 
 char* strRight(const char* str, size_t n) {
@@ -456,7 +456,7 @@ void playFirst() {
 
 void playFileOrFolder(const char* path) {
   Serial.printf("playFileOrFolder(%s)\n", path);
-  stop();
+  stop(false);
   int lastTrack = 0;
 
   File root = filesystem->open(path);
@@ -536,10 +536,13 @@ void setup() {
 #if HW_REV == 1
   Serial.println("SD_SPI...");
   spi_sd.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  Serial.println("SD...");
-  if (!SD.begin(SD_CS, spi_sd)) {
-    Serial.println("Error: Card Mount Failed");
-    return;
+  Serial.println("Try connecting SD with 40 MHz...");
+  if (!SD.begin(SD_CS, spi_sd, 40000000)) {
+    Serial.println("Try connecting SD with 25 MHz...");
+    if (!SD.begin(SD_CS, spi_sd)) {
+      Serial.println("Error: SD card mount failed");
+      return;
+    }
   }
   filesystem = &SD;
 #elif HW_REV == 2
@@ -550,21 +553,26 @@ void setup() {
   }
   filesystem = &SD_MMC;
 #endif
+
   // RFID - NFC
   Serial.println("RFID...");
   spi_rfid.begin(RFID_SCK, RFID_MISO, RFID_MOSI, RFID_CS);
   mfrc522.PCD_Init();
-  mfrc522.PCD_DumpVersionToSerial();
+  // code from mfrc522.PCD_DumpVersionToSerial();
+  byte v = mfrc522.PCD_ReadRegister(mfrc522.VersionReg);
+  if ((v == 0x00) || (v == 0xFF)) {
+    Serial.println(F("WARNING: MFRC522 communication failure, is the MFRC522 properly connected?"));
+    return;
+  }
   nfc.begin();
 
   // Audio
   audioLogger = &Serial;
   Serial.println("Audio...");
-  re_init_audio_source();
+  // re_init_audio_source();  // delay init until first playback
 
   out_i2s = new AudioOutputI2S();
   out_i2s->SetGain(InitialAudioGain / 100.0);
-
   mp3 = new AudioGeneratorMP3();
 
 // BLE
