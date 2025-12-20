@@ -590,8 +590,11 @@ void setup() {
 // WIFI
 #if WIFI
   if (digitalRead(BTN_PREV) == LOW) {
-    Serial.println("WIFI setup mode");
-    setupWifi();
+    Serial.println("BTN_PREV pressed, start WIFI setup mode");
+    setupWifi(*filesystem);
+  } else {
+    Serial.println("BTN_PREV not pressed, skip WIFI setup");
+    WiFi.mode(WIFI_OFF);
   }
 #endif
 
@@ -628,10 +631,6 @@ void loop() {
   }
 
   bool cardPresent = (digitalRead(BTN_CARD_INSIDE) == LOW);
-
-#if WIFI
-  loopWifi();
-#endif
 
   switch (currentState) {
       /////////////////////////////////////////////////////////////////////////////////
