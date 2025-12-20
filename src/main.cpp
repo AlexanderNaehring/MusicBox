@@ -1,20 +1,16 @@
 #define DEBUG true
-#define HW_REV 1
+#define HW_REV 2
 #define BLE false
 #define WIFI true
+#define AllowSleep true
 
 #include <Arduino.h>
+#include <SD.h>
 #include <SPI.h>
 #include <driver/adc.h>
 #include <esp_adc_cal.h>
 
 #include <vector>
-
-#if HW_REV == 1
-#include <SD.h>
-#elif HW_REV == 2
-#include <SD_MMC.h>
-#endif
 
 #include "AudioFileSourceBuffer.h"
 #include "AudioFileSourceFS.h"
@@ -55,6 +51,21 @@ void debugPrint(String msg) {
 #define LED_R 4
 #define LED_G 27
 #define LED_B 16
+#elif HW_REV == 2
+// use GPIO 4 for card detection to allow wakeup from sleep
+// red LED moved to GPIO17
+// Button inputs
+#define BTN_CARD_INSIDE GPIO_NUM_4
+#define BTN_NEXT GPIO_NUM_35
+#define BTN_PREV GPIO_NUM_34
+// Encoder
+#define RotaryA GPIO_NUM_33
+#define RotaryB GPIO_NUM_32
+// RGB LED
+#define LED_R GPIO_NUM_17
+#define LED_G GPIO_NUM_27
+#define LED_B GPIO_NUM_16
+#endif
 // SD (VSPI)
 #define SD_MOSI 23
 #define SD_MISO 19
@@ -68,35 +79,6 @@ void debugPrint(String msg) {
 // SPI
 SPIClass spi_sd(VSPI);
 SPIClass spi_rfid(HSPI);
-
-#elif HW_REV == 2
-// Button inputs
-#define BTN_CARD_INSIDE 17
-#define BTN_NEXT 35
-#define BTN_PREV 34
-// Encoder
-#define RotaryA 33
-#define RotaryB 32
-// RGB LED
-#define LED_R 21
-#define LED_G 27
-#define LED_B 16
-// SD (SDIO / MMC mode)
-#define SD_CMD 15
-#define SD_CLK 14
-#define SD_DATA0 2
-#define SD_DATA1 4
-#define SD_DATA2 12
-#define SD_DATA3 13
-//  RFID (VSPI)
-#define RFID_MOSI 23
-#define RFID_MISO 19
-#define RFID_SCK 18
-#define RFID_CS 5
-// SPI
-SPIClass spi_rfid(VSPI);
-
-#endif
 
 // General stuff
 #define MAX_UID_LEN 10
@@ -143,6 +125,7 @@ enum class DeviceState {
   ERROR         // ERROR state
 };
 DeviceState currentState = DeviceState::SETUP;
+RTC_DATA_ATTR DeviceState shutdownDeviceState = DeviceState::SETUP;
 
 std::vector<char*> files{};
 int currentFile = -1;
@@ -164,7 +147,8 @@ void setLED(uint8_t red, uint8_t green, uint8_t blue) {
   analogWrite(LED_B, 255 - blue);
 }
 
-String currentDeviceState(DeviceState state = currentState) {
+unsigned long lastStateSwitch = millis();
+String getDeviceStateStr(DeviceState state = currentState) {
   switch (state) {
     case DeviceState::SETUP:
       return "SETUP";
@@ -191,11 +175,11 @@ void setDeviceState(DeviceState newState) {
   }
 
   // Log transition
-  Serial.printf("State: %s -> %s\n", currentDeviceState(currentState),
-                currentDeviceState(newState));
+  Serial.printf("State: %s -> %s\n", getDeviceStateStr(currentState), getDeviceStateStr(newState));
 
   // Update state
   currentState = newState;
+  lastStateSwitch = millis();
 
   // Set LED based on new state
   switch (newState) {
@@ -219,9 +203,11 @@ void setDeviceState(DeviceState newState) {
       break;
   }
 #if BLE
-  bleInfo.setState(currentDeviceState(newState));
+  bleInfo.setState(getDeviceStateStr(newState));
 #endif
 }
+
+unsigned long getMsInState() { return millis() - lastStateSwitch; }
 
 esp_adc_cal_characteristics_t* adc_chars;
 
@@ -316,7 +302,9 @@ void stop(bool setDeviceToStopped = true) {
     currentFolder = nullptr;
   }
 
-  if (setDeviceToStopped) setDeviceState(DeviceState::STOPPED);
+  if (setDeviceToStopped) {
+    setDeviceState(DeviceState::STOPPED);
+  }
 }
 
 char* strRight(const char* str, size_t n) {
@@ -415,7 +403,7 @@ void playNext() {
 
 #if BLE
   bleInfo.beginUpdate();
-  bleInfo.setState(currentDeviceState());
+  bleInfo.setState(getDeviceStateStr());
   bleInfo.setBatteryPct(100);
   bleInfo.setFolder(currentFolder ? String(currentFolder) : String(""));
   bleInfo.setFile(String(filepath));
@@ -514,12 +502,70 @@ void playFileOrFolder(const char* path) {
   }
 }
 
+void print_wakeup_reason() {
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  switch (wakeup_reason) {
+    case ESP_SLEEP_WAKEUP_EXT0:
+      Serial.println("Wakeup caused by external signal using RTC_IO");
+      break;
+    case ESP_SLEEP_WAKEUP_EXT1:
+      Serial.println("Wakeup caused by external signal using RTC_CNTL");
+      break;
+    case ESP_SLEEP_WAKEUP_TIMER:
+      Serial.println("Wakeup caused by timer");
+      break;
+    case ESP_SLEEP_WAKEUP_TOUCHPAD:
+      Serial.println("Wakeup caused by touchpad");
+      break;
+    case ESP_SLEEP_WAKEUP_ULP:
+      Serial.println("Wakeup caused by ULP program");
+      break;
+    default:
+      Serial.printf("Wakeup was not caused by sleep: %d\n", wakeup_reason);
+      break;
+  }
+}
+
+void lightSleep(uint64_t timeout_ms = 1000, uint8_t wakeup_pin = UINT8_MAX, int level = 0) {
+#if !AllowSleep
+  return;
+#endif
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  if (wakeup_pin == UINT8_MAX && timeout_ms == 0) {
+    timeout_ms = 1000;
+  }
+  if (wakeup_pin != UINT8_MAX) esp_sleep_enable_ext0_wakeup((gpio_num_t)wakeup_pin, level);
+  if (timeout_ms > 0) esp_sleep_enable_timer_wakeup(timeout_ms * 1000);  // 100 ms
+
+  Serial.println("light sleep...");
+  if (ESP_OK == esp_light_sleep_start()) {
+    print_wakeup_reason();
+  } else {
+    Serial.println("Error going to light sleep");
+  }
+}
+
+void shutdown(uint8_t wakeup_pin = UINT8_MAX, int level = 0) {
+#if !AllowSleep
+  return;
+#endif
+  esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+  if (wakeup_pin != UINT8_MAX) esp_sleep_enable_ext0_wakeup((gpio_num_t)wakeup_pin, level);
+  shutdownDeviceState = currentState;
+  Serial.println("Going to deep sleep...");
+  esp_deep_sleep_start();
+}
+
 void setup() {
   Serial.begin(115200);
   Serial.println("Welcome to MusicBox");
   Serial.printf("Built from git commit %s on %s at %s\n", GIT_COMMIT, __DATE__, __TIME__);
 
+  print_wakeup_reason();
   setupBatteryMonitoring();
+
+  Serial.printf("Last shutdown state: %s\n", getDeviceStateStr(shutdownDeviceState));
 
   // LED
   pinMode(LED_R, OUTPUT);
@@ -531,7 +577,7 @@ void setup() {
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
   btnNext.attachClick(playNext);
   btnPrev.attachClick(playPrev);
-  // btnPrev.attachLongPressStart(playFirst);
+  btnPrev.attachLongPressStart(playFirst);
 
   // Rotary
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
@@ -539,7 +585,6 @@ void setup() {
   rotaryGain.setCount(InitialAudioGain);
 
   // SD card
-#if HW_REV == 1
   Serial.println("SD_SPI...");
   spi_sd.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
   Serial.println("Try connecting SD with 40 MHz...");
@@ -551,14 +596,6 @@ void setup() {
     }
   }
   filesystem = &SD;
-#elif HW_REV == 2
-  Serial.println("SD_MMC...");
-  if (!SD_MMC.begin("/sdcard", true)) {
-    Serial.println("Error: Card Mount Failed");
-    return;
-  }
-  filesystem = &SD_MMC;
-#endif
 
   // RFID - NFC
   Serial.println("RFID...");
@@ -600,6 +637,12 @@ void setup() {
 
   Serial.println("Setup ready...");
   setDeviceState(DeviceState::IDLE);
+
+  esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+  if (wakeup_reason != 0 && shutdownDeviceState == DeviceState::STOPPED) {
+    Serial.println("Woke up after previous STOPPED state");
+    setDeviceState(DeviceState::STOPPED);
+  }
 }
 
 void loop() {
@@ -640,6 +683,11 @@ void loop() {
       if (cardPresent) {
         setDeviceState(DeviceState::READING_NFC);
       }
+#if HW_REV == 1
+      lightSleep(250);
+#elif HW_REV == 2
+      lightSleep(5000, BTN_CARD_INSIDE, 0);
+#endif
       break;
 
       /////////////////////////////////////////////////////////////////////////////////
@@ -751,6 +799,11 @@ void loop() {
         // Card inserted - resume playback (or start new card)
         setDeviceState(DeviceState::READING_NFC);
       }
+#if HW_REV == 1
+      lightSleep(250);
+#elif HW_REV == 2
+      lightSleep(5000, BTN_CARD_INSIDE, 0);
+#endif
       break;
 
     /////////////////////////////////////////////////////////////////////////////////
@@ -759,7 +812,17 @@ void loop() {
         // Card removed - now ready for a new card
         setDeviceState(DeviceState::IDLE);
       }
+#if HW_REV == 1
       // While card is still in, just wait - do nothing
+      lightSleep(1000);
+#elif HW_REV == 2
+      // save energy by sleeping until card is removed
+      if (getMsInState() >= 1 * 60 * 1000) {
+        shutdown(BTN_CARD_INSIDE, 1);
+      } else {
+        lightSleep(5000, BTN_CARD_INSIDE, 1);
+      }
+#endif
       break;
 
     /////////////////////////////////////////////////////////////////////////////////
@@ -768,6 +831,7 @@ void loop() {
       setLED(RGB_Error);
       delay(10000);
       ESP.restart();
+      break;
     /////////////////////////////////////////////////////////////////////////////////
     case DeviceState::SETUP:
       Serial.println("ERROR - invalid state SETUP during loop()");
