@@ -36,7 +36,7 @@ void shutdownWifi(void) {
   Serial.println("Shutting down WiFi...");
   webServer.end();
   MDNS.end();
-  WiFi.disconnectAsync(true);
+  WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 }
 
@@ -587,21 +587,23 @@ void WebFileManager::deleteRecursive(const char* path) {
 void WebFileManager::handleFileUpload(AsyncWebServerRequest* request, String filename, size_t index,
                                       uint8_t* data, size_t len, bool final) {
   static File uploadFile;
+  static String uploadPath;
 
   if (index == 0) {
-    String path = "/";
-    if (request->hasParam("path", true)) {
-      path = request->getParam("path", true)->value();
+    // Get path from request on first chunk
+    uploadPath = _rootPath;
+    if (request->hasArg("path")) {
+      uploadPath = request->arg("path");
     }
 
-    if (!path.endsWith("/")) path += "/";
-    path += filename;
+    if (!uploadPath.endsWith("/")) uploadPath += "/";
+    uploadPath += filename;
 
-    Serial.printf("Upload Start: %s\n", path.c_str());
-    uploadFile = _fs->open(path.c_str(), FILE_WRITE);
+    Serial.printf("Upload Start: %s\n", uploadPath.c_str());
+    uploadFile = _fs->open(uploadPath.c_str(), FILE_WRITE);
   }
 
-  if (uploadFile) {
+  if (uploadFile && len > 0) {
     uploadFile.write(data, len);
   }
 
