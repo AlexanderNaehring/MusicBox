@@ -1,8 +1,8 @@
 #define DEBUG true
-#define HW_REV 2
+#define HW_REV 1
 #define BLE false
-#define WIFI true
-#define AllowSleep true
+#define WIFI false
+#define AllowSleep false
 
 #include <Arduino.h>
 #include <SD.h>
@@ -17,7 +17,9 @@
 #include "AudioFileSourceID3.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
+#if HW_REV == 2
 #include "ESP32Encoder.h"
+#endif
 #include "MFRC522.h"
 #include "NfcAdapter.h"
 #include "OneButton.h"
@@ -44,9 +46,6 @@ void debugPrint(String msg) {
 #define BTN_CARD_INSIDE 17
 #define BTN_NEXT 35
 #define BTN_PREV 34
-// Encoder
-#define RotaryA 33
-#define RotaryB 32
 // RGB LED
 #define LED_R 4
 #define LED_G 27
@@ -96,15 +95,17 @@ unsigned long lastBatteryCheck = 0;
 // activeLow=true, pullupActive=false
 OneButton btnNext(BTN_NEXT, true, false);
 OneButton btnPrev(BTN_PREV, true, false);
+#if HW_REV == 2
 // Rotary Encoder
 ESP32Encoder rotaryGain;
+#endif
 // RFID
 MFRC522 mfrc522(RFID_CS, UINT8_MAX, spi_rfid);
 NfcAdapter nfc = NfcAdapter(&mfrc522);
 // ESP8266Audio
-#define MinAudioGain 1
+#define MinAudioGain 2
+#define MaxAudioGain 52
 #define InitialAudioGain 8
-#define MaxAudioGain 50
 #define AUDIO_SOURCE_BUFFER_SIZE 1024 * 4
 AudioFileSourceFS* source_fs = NULL;
 AudioFileSourceBuffer* source_buffer = NULL;
@@ -139,7 +140,11 @@ unsigned long last_rfid_check_time;
 byte current_uid[MAX_UID_LEN];
 byte last_uid[MAX_UID_LEN];
 
+#if HW_REV == 1
+int lastGain = InitialAudioGain;
+#elif HW_REV == 2
 int64_t lastGain = InitialAudioGain;
+#endif
 
 void setLED(uint8_t red, uint8_t green, uint8_t blue) {
   analogWrite(LED_R, 255 - red);
@@ -448,6 +453,46 @@ void playFirst() {
   playNext();
 }
 
+#if HW_REV == 1
+void volumeDown() {
+  lastGain = lastGain - 2;
+  if (lastGain < MinAudioGain) lastGain = MinAudioGain;
+  Serial.printf("Volume: %d\n", lastGain);
+  out_i2s->SetGain(lastGain / 100.0);
+}
+
+void volumeUp() {
+  lastGain = lastGain + 2;
+  if (lastGain > MaxAudioGain) lastGain = MaxAudioGain;
+  Serial.printf("Volume: %d\n", lastGain);
+  out_i2s->SetGain(lastGain / 100.0);
+}
+
+bool bothHeldHandled = false;
+
+void onNextLongPress() {
+  if (digitalRead(BTN_PREV) == LOW) {
+    if (!bothHeldHandled) {
+      bothHeldHandled = true;
+      playFirst();
+    }
+  } else {
+    playNext();
+  }
+}
+
+void onPrevLongPress() {
+  if (digitalRead(BTN_NEXT) == LOW) {
+    if (!bothHeldHandled) {
+      bothHeldHandled = true;
+      playFirst();
+    }
+  } else {
+    playPrev();
+  }
+}
+#endif  // HW_REV == 1
+
 void playFileOrFolder(const char* path) {
   Serial.printf("playFileOrFolder(%s)\n", path);
   stop(false);
@@ -575,6 +620,14 @@ void setup() {
 
   // Buttons
   pinMode(BTN_CARD_INSIDE, INPUT_PULLUP);
+#if HW_REV == 1
+  btnNext.attachClick(volumeUp);
+  btnNext.attachLongPressStart(onNextLongPress);
+  btnNext.attachLongPressStop([]() { bothHeldHandled = false; });
+  btnPrev.attachClick(volumeDown);
+  btnPrev.attachLongPressStart(onPrevLongPress);
+  btnPrev.attachLongPressStop([]() { bothHeldHandled = false; });
+#elif HW_REV == 2
   btnNext.attachClick(playNext);
   btnPrev.attachClick(playPrev);
   btnPrev.attachLongPressStart(playFirst);
@@ -583,6 +636,7 @@ void setup() {
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
   rotaryGain.attachHalfQuad(RotaryA, RotaryB);
   rotaryGain.setCount(InitialAudioGain);
+#endif
 
   // SD card
   Serial.println("SD_SPI...");
@@ -652,6 +706,7 @@ void loop() {
   btnNext.tick();
   btnPrev.tick();
 
+#if HW_REV == 2
   // read encoder
   int64_t gain = rotaryGain.getCount();
   if (gain != lastGain) {
@@ -666,6 +721,7 @@ void loop() {
     Serial.println(gain);
     out_i2s->SetGain(gain / 100.0);
   }
+#endif
 
   // check battery every interval
   if (now - lastBatteryCheck > BATTERY_CHECK_INTERVAL) {
