@@ -5,3 +5,5 @@
 .vscode/ipch
 src/git_info.h
 credentials.ini
+tools/content
+tools/config.json

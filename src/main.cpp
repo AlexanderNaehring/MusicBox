@@ -2,6 +2,7 @@
 #define HW_REV 1
 #define BLE false
 #define WIFI false
+#define WIFI_DOWNLOAD true
 #define AllowSleep false
 
 #include <Arduino.h>
@@ -31,6 +32,10 @@
 
 #if WIFI
 #include "MusicBoxWiFi.h"
+#endif
+
+#if WIFI_DOWNLOAD
+#include "MusicBoxWifiDownloader.h"
 #endif
 
 void debugPrint(String msg) {
@@ -868,6 +873,17 @@ void loop() {
           }
 
           Serial.printf("Path: %s\n", filePath.c_str());
+
+          bool contentReady = true;
+#if WIFI_DOWNLOAD
+          contentReady = ensureContentAvailable(*filesystem, filePath.c_str());
+#endif
+
+          if (!contentReady) {
+            Serial.printf("Content unavailable for '%s'\n", filePath.c_str());
+            setDeviceState(DeviceState::ERROR);
+            break;
+          }
 
           re_init_audio_source();
           playFileOrFolder(filePath.c_str());
