@@ -83,7 +83,7 @@ SPIClass spi_rfid(HSPI);
 #define MAX_UID_LEN 10
 #define BATTERY_SAMPLES 10
 #define BATTERY_ADC_CHANNEL ADC1_CHANNEL_0  // GPIO36
-#define BATTERY_CHECK_INTERVAL 30000        // 30 seconds
+#define BATTERY_CHECK_INTERVAL 60000        // 60 seconds
 unsigned long lastBatteryCheck = 0;
 // Color tuples
 #define RGB_Waiting 200, 200, 200
@@ -133,6 +133,10 @@ int currentFile = -1;
 char* currentFolder = nullptr;
 char* lastTrackFile = nullptr;
 unsigned long lastPlayMillis = 0;
+uint32_t resumePosition = 0;
+
+unsigned long lastPositionSaveMillis = 0;
+#define POSITION_SAVE_INTERVAL 30000  // 30 seconds
 
 unsigned long last_rfid_check_time;
 #define RFID_CHECK_INTERVAL 50
@@ -363,6 +367,57 @@ void addFolderToQueue(fs::File root) {
   }
 }
 
+#define LAST_PLAYBACK_FILE_SUFFIX "/last.int64"
+
+struct PlaybackPosition {
+  int64_t trackIdx;
+  int64_t position;
+};
+
+void savePlaybackPosition(int64_t trackIdx, int64_t position) {
+  if (!(currentFolder && strlen(currentFolder) > 0 && lastTrackFile && strlen(lastTrackFile) > 0)) {
+    return;
+  }
+  PlaybackPosition state{trackIdx, position};
+  File file = filesystem->open(lastTrackFile, "w");
+  if (!file) {
+    Serial.printf("savePlaybackPosition: failed to open %s for writing\n", lastTrackFile);
+    return;
+  }
+  size_t written = file.write((const uint8_t*)&state, sizeof(state));
+  file.close();
+  Serial.printf("savePlaybackPosition: wrote trackIdx=%lld position=%lld (%u bytes) to %s\n",
+                (long long)state.trackIdx, (long long)state.position, (unsigned)written,
+                lastTrackFile);
+}
+
+// Returns true if a valid saved state was read into trackIdx/position.
+bool loadPlaybackPosition(int64_t& trackIdx, int64_t& position) {
+  trackIdx = 0;
+  position = 0;
+  if (!(lastTrackFile && strlen(lastTrackFile) > 0)) {
+    return false;
+  }
+  File file = filesystem->open(lastTrackFile);
+  if (!file) {
+    Serial.printf("loadPlaybackPosition: %s not found\n", lastTrackFile);
+    return false;
+  }
+  PlaybackPosition state{0, 0};
+  size_t bytesRead = file.read((uint8_t*)&state, sizeof(state));
+  file.close();
+  if (bytesRead != sizeof(state)) {
+    Serial.printf("loadPlaybackPosition: %s has unexpected size (%u bytes, expected %u)\n",
+                  lastTrackFile, (unsigned)bytesRead, (unsigned)sizeof(state));
+    return false;
+  }
+  trackIdx = state.trackIdx;
+  position = state.position;
+  Serial.printf("loadPlaybackPosition: read trackIdx=%lld position=%lld from %s\n",
+                (long long)trackIdx, (long long)position, lastTrackFile);
+  return true;
+}
+
 void playNext() {
   Serial.println("playNext()");
   if (files.size() <= 0) {
@@ -372,14 +427,7 @@ void playNext() {
   if (currentFile >= (int)files.size() - 1) {
     Serial.printf("End of queue (%d, %d)\n", currentFile, files.size());
 
-    if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile && strlen(lastTrackFile) > 0) {
-      File file = filesystem->open(lastTrackFile, "w");
-      if (file) {
-        Serial.printf("clear lastTrackFile\n");
-        file.printf("0");
-        file.close();
-      }
-    }
+    savePlaybackPosition(0, 0);
 
     stop();
     return;
@@ -388,22 +436,23 @@ void playNext() {
   currentFile++;
   char* filepath = files[currentFile];
 
-  // save current track number to SD
-  if (currentFolder && strlen(currentFolder) > 0 && lastTrackFile && strlen(lastTrackFile) > 0) {
-    File file = filesystem->open(lastTrackFile, "w");
-    if (file) {
-      Serial.printf("Writing track number to '/last.txt'...\n");
-      file.printf("%d", currentFile);
-      file.close();
-    }
-  }
+  // save current track number (and resume position, if any) to SD
+  savePlaybackPosition(currentFile, resumePosition);
 
   // start playback
   re_init_audio_source();
   source_fs->open(filepath);
   Serial.printf("mp3->begin() %s\n", filepath);
   mp3->begin(source_id3, out_i2s);
+
+  if (resumePosition > 0) {
+    Serial.printf("Resuming at byte position %lu\n", (unsigned long)resumePosition);
+    source_id3->seek(resumePosition, SEEK_SET);
+  }
+  resumePosition = 0;
+
   lastPlayMillis = millis();
+  lastPositionSaveMillis = lastPlayMillis;
   setDeviceState(DeviceState::PLAYING);
 
 #if BLE
@@ -512,14 +561,14 @@ void playFileOrFolder(const char* path) {
     currentFolder = strdup(path);
 
     if (lastTrackFile) free(lastTrackFile);
-    lastTrackFile = (char*)malloc(strlen(path) + 10);
-    sprintf(lastTrackFile, "%s/last.txt", path);
+    lastTrackFile = (char*)malloc(strlen(path) + strlen(LAST_PLAYBACK_FILE_SUFFIX) + 1);
+    sprintf(lastTrackFile, "%s%s", path, LAST_PLAYBACK_FILE_SUFFIX);
 
-    File file = filesystem->open(lastTrackFile);
-    if (file) {
-      Serial.printf("Found '/last.txt' file, checking content...\n");
-      lastTrack = file.parseInt();
-      file.close();
+    int64_t savedTrackIdx = 0;
+    int64_t savedPosition = 0;
+    if (loadPlaybackPosition(savedTrackIdx, savedPosition)) {
+      lastTrack = (int)savedTrackIdx;
+      resumePosition = (uint32_t)savedPosition;
     }
 
   } else {
@@ -539,6 +588,7 @@ void playFileOrFolder(const char* path) {
       currentFile = lastTrack - 1;
     } else {
       Serial.printf("Start queue from start\n");
+      resumePosition = 0;
     }
     playNext();
   } else {
@@ -833,6 +883,7 @@ void loop() {
       /////////////////////////////////////////////////////////////////////////////////
     case DeviceState::PLAYING:
       if (!cardPresent) {
+        savePlaybackPosition(currentFile, source_id3->getPos());
         setDeviceState(DeviceState::PAUSED);
         break;
       }
@@ -840,6 +891,9 @@ void loop() {
       if (mp3->isRunning()) {
         if (!mp3->loop()) {
           playNext();
+        } else if (now - lastPositionSaveMillis >= POSITION_SAVE_INTERVAL) {
+          lastPositionSaveMillis = now;
+          savePlaybackPosition(currentFile, source_id3->getPos());
         }
       } else {
         // Audio stopped unexpectedly - maybe SD card error
@@ -854,6 +908,7 @@ void loop() {
       if (cardPresent) {
         // Card inserted - resume playback (or start new card)
         setDeviceState(DeviceState::READING_NFC);
+        break;
       }
 #if HW_REV == 1
       lightSleep(250);
