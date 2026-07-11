@@ -7,6 +7,7 @@
 #include "AudioFileSourceFS.h"
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
+#include "Board.h"
 
 #ifndef WIFI_SSID
 #define WIFI_SSID "<please set your SSID>"
@@ -28,12 +29,6 @@
 #define DOWNLOAD_STALL_TIMEOUT_MS 10000
 #define DOWNLOAD_READ_BUFFER_SIZE 4096
 
-// Shared I2S output, set up once in main.cpp's setup(). Reused here (with our own,
-// short-lived source/generator) to play cue sounds without touching the main playback
-// state machine's own source/generator objects.
-extern AudioOutputI2S* out_i2s;
-// RGB LED driver from main.cpp, reused here to show download progress.
-extern void setLED(uint8_t red, uint8_t green, uint8_t blue);
 
 // Classic color-wheel step -> RGB (0/85/170 are pure blue/green/red, smoothly
 // blended between). Used to cycle the LED through the rainbow while data is
@@ -191,7 +186,8 @@ static void disconnectWifi() {
 // ---- audio cues -------------------------------------------------------------------
 
 static void playCue(fs::FS& fs, const char* path) {
-  if (!out_i2s || !fs.exists(path)) {
+  AudioOutputI2S* output = board.audioOutput();
+  if (!output || !fs.exists(path)) {
     Serial.printf("MusicBoxWifiDownloader: cue '%s' unavailable, skipping\n", path);
     return;
   }
@@ -203,7 +199,7 @@ static void playCue(fs::FS& fs, const char* path) {
     return;
   }
   AudioGeneratorMP3 cueMp3;
-  if (!cueMp3.begin(&cueSource, out_i2s)) {
+  if (!cueMp3.begin(&cueSource, output)) {
     Serial.printf("MusicBoxWifiDownloader: failed to start cue '%s'\n", path);
     return;
   }
@@ -280,7 +276,7 @@ static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& loca
       // by itself while nothing is coming in (i.e. while stalled).
       uint8_t r, g, b;
       rainbowColor(rainbowStep++, r, g, b);
-      setLED(r, g, b);
+      board.setLED(r, g, b);
 
       if (targetSize > 0) {
         int percent = (int)((totalWritten * 100) / targetSize);
@@ -294,7 +290,7 @@ static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& loca
     } else {
       if (millis() - lastDataMillis > DOWNLOAD_STALL_TIMEOUT_MS) {
         Serial.printf("MusicBoxWifiDownloader: download stalled, aborting '%s'\n", url.c_str());
-        setLED(200, 0, 0);  // matches main.cpp's RGB_Error
+        board.setLED(RGB_Error);
         break;
       }
       delay(10);

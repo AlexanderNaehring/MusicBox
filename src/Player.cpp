@@ -1,0 +1,300 @@
+#include "Player.h"
+
+#include <algorithm>
+
+#define MinAudioGain 2
+#define MaxAudioGain 52
+#define InitialAudioGain 8
+#define AUDIO_SOURCE_BUFFER_SIZE 1024 * 4
+#define POSITION_SAVE_INTERVAL 30000  // 30 seconds
+#define LAST_PLAYBACK_FILE_SUFFIX "/last.int64"
+
+Player player;
+
+struct PlaybackPosition {
+  int64_t trackIdx;
+  int64_t position;
+};
+
+static char* strRight(const char* str, size_t n) {
+  size_t len = strlen(str);
+  if (n > len) n = len;
+  return (char*)str + len - n;
+}
+
+void Player::begin(fs::FS& fs, AudioOutputI2S* output) {
+  fs_ = &fs;
+  output_ = output;
+  mp3_ = new AudioGeneratorMP3();
+  setGainRaw(InitialAudioGain);
+}
+
+void Player::reinitAudioSource() {
+  Serial.printf("Re-init audio source...");
+  if (mp3_ && mp3_->isRunning()) mp3_->stop();
+
+  Serial.printf(" delete audio sources...");
+  delete sourceFs_;
+  sourceFs_ = nullptr;
+  delete sourceBuffer_;
+  sourceBuffer_ = nullptr;
+  delete sourceId3_;
+  sourceId3_ = nullptr;
+
+  Serial.printf(" create sources...");
+  sourceFs_ = new AudioFileSourceFS(*fs_);
+  sourceBuffer_ = new AudioFileSourceBuffer(sourceFs_, AUDIO_SOURCE_BUFFER_SIZE);
+  // ID3 file source for MP3 files reduces the delay until playback starts, and
+  // enables ID3 Tag callbacks
+  sourceId3_ = new AudioFileSourceID3(sourceBuffer_);
+  Serial.printf(" done\n");
+}
+
+void Player::stop() {
+  Serial.printf("stop()\n");
+  if (mp3_ && mp3_->isRunning()) {
+    Serial.printf("   mp3->stop()\n");
+    mp3_->stop();
+  }
+  if (files_.size() > 0) {
+    Serial.printf("  clear files list\n");
+    for (char* x : files_) {
+      free((void*)x);
+    }
+    files_.clear();
+  }
+  Serial.printf("  reset flags\n");
+  currentFile_ = -1;
+  if (currentFolder_) {
+    free(currentFolder_);
+    currentFolder_ = nullptr;
+  }
+}
+
+void Player::addFileToQueue(fs::File file) {
+  // Directly converting fs::File::path() to a String corrupts its content
+  // (confirmed empirically - concatenating it char-by-char produced garbage,
+  // especially once a "." was involved). Copy the raw bytes by hand instead.
+  const char* tmp = file.path();
+  if (strcmp(strRight(tmp, 4), ".mp3")) {
+    Serial.printf("Skip %s, files must end with .mp3\n", tmp);
+    return;
+  }
+  char* path = (char*)malloc((strlen(tmp) + 1) * sizeof(char));
+  strcpy(path, file.path());
+  Serial.printf("Add to queue: %s\n", path);
+  files_.push_back(path);
+}
+
+void Player::addFolderToQueue(fs::File root) {
+  if (!root.isDirectory()) {
+    Serial.println("Not a directory");
+    return;
+  }
+
+  File file = root.openNextFile();
+  while (file) {
+    if (!file.isDirectory()) {
+      addFileToQueue(file);
+    }
+    file.close();
+    file = root.openNextFile();
+  }
+}
+
+void Player::persistPosition(int64_t trackIdx, int64_t position) {
+  if (!(currentFolder_ && strlen(currentFolder_) > 0 && lastTrackFile_ && strlen(lastTrackFile_) > 0)) {
+    return;
+  }
+  PlaybackPosition state{trackIdx, position};
+  File file = fs_->open(lastTrackFile_, "w");
+  if (!file) {
+    Serial.printf("persistPosition: failed to open %s for writing\n", lastTrackFile_);
+    return;
+  }
+  size_t written = file.write((const uint8_t*)&state, sizeof(state));
+  file.close();
+  Serial.printf("persistPosition: wrote trackIdx=%lld position=%lld (%u bytes) to %s\n",
+                (long long)state.trackIdx, (long long)state.position, (unsigned)written,
+                lastTrackFile_);
+}
+
+bool Player::loadPersistedPosition(int64_t& trackIdx, int64_t& position) {
+  trackIdx = 0;
+  position = 0;
+  if (!(lastTrackFile_ && strlen(lastTrackFile_) > 0)) {
+    return false;
+  }
+  File file = fs_->open(lastTrackFile_);
+  if (!file) {
+    Serial.printf("loadPersistedPosition: %s not found\n", lastTrackFile_);
+    return false;
+  }
+  PlaybackPosition state{0, 0};
+  size_t bytesRead = file.read((uint8_t*)&state, sizeof(state));
+  file.close();
+  if (bytesRead != sizeof(state)) {
+    Serial.printf("loadPersistedPosition: %s has unexpected size (%u bytes, expected %u)\n",
+                  lastTrackFile_, (unsigned)bytesRead, (unsigned)sizeof(state));
+    return false;
+  }
+  trackIdx = state.trackIdx;
+  position = state.position;
+  Serial.printf("loadPersistedPosition: read trackIdx=%lld position=%lld from %s\n",
+                (long long)trackIdx, (long long)position, lastTrackFile_);
+  return true;
+}
+
+void Player::saveCurrentPosition() { persistPosition(currentFile_, sourceId3_->getPos()); }
+
+bool Player::playNext() {
+  Serial.println("playNext()");
+  if (files_.size() <= 0) {
+    Serial.printf("Queue empty\n");
+    return false;
+  }
+  if (currentFile_ >= (int)files_.size() - 1) {
+    Serial.printf("End of queue (%d, %u)\n", currentFile_, (unsigned)files_.size());
+    persistPosition(0, 0);
+    stop();
+    return false;
+  }
+
+  currentFile_++;
+  char* filepath = files_[currentFile_];
+
+  // save current track number (and resume position, if any) to SD
+  persistPosition(currentFile_, resumePosition_);
+
+  // start playback
+  reinitAudioSource();
+  sourceFs_->open(filepath);
+  Serial.printf("mp3->begin() %s\n", filepath);
+  mp3_->begin(sourceId3_, output_);
+
+  if (resumePosition_ > 0) {
+    Serial.printf("Resuming at byte position %lu\n", (unsigned long)resumePosition_);
+    sourceId3_->seek(resumePosition_, SEEK_SET);
+  }
+  resumePosition_ = 0;
+
+  lastPlayMillis_ = millis();
+  lastPositionSaveMillis_ = lastPlayMillis_;
+  return true;
+}
+
+bool Player::playPrev() {
+  Serial.println("playPrev()");
+  if (files_.size() <= 0) {
+    Serial.printf("Cannot play, queue empty\n");
+    return false;
+  }
+
+  // check if more than x seconds into the current file
+  if ((millis() - lastPlayMillis_) > 10000) {
+    Serial.printf("Play current file from start");
+    currentFile_--;
+    return playNext();
+  }
+
+  // already at first file in queue?
+  if (currentFile_ <= 0) {
+    Serial.printf("Beginning of queue, restart current file\n");
+    currentFile_--;
+    return playNext();
+  }
+
+  // go to previous file in queue
+  currentFile_ -= 2;
+  return playNext();
+}
+
+bool Player::playFirst() {
+  Serial.println("playFirst()");
+  currentFile_ = -1;
+  return playNext();
+}
+
+Player::PlayResult Player::playPathOrFolder(const char* path) {
+  Serial.printf("playPathOrFolder(%s)\n", path);
+  stop();
+  int lastTrack = 0;
+
+  File root = fs_->open(path);
+  if (!root) {
+    Serial.printf("Failed to open %s\n", path);
+    return PlayResult::OpenFailed;
+  }
+
+  if (root.isDirectory()) {
+    addFolderToQueue(root);
+
+    if (currentFolder_) free(currentFolder_);
+    currentFolder_ = strdup(path);
+
+    if (lastTrackFile_) free(lastTrackFile_);
+    lastTrackFile_ = (char*)malloc(strlen(path) + strlen(LAST_PLAYBACK_FILE_SUFFIX) + 1);
+    sprintf(lastTrackFile_, "%s%s", path, LAST_PLAYBACK_FILE_SUFFIX);
+
+    int64_t savedTrackIdx = 0;
+    int64_t savedPosition = 0;
+    if (loadPersistedPosition(savedTrackIdx, savedPosition)) {
+      lastTrack = (int)savedTrackIdx;
+      resumePosition_ = (uint32_t)savedPosition;
+    }
+
+  } else {
+    addFileToQueue(root);
+  }
+  root.close();
+
+  if (files_.size() == 0) {
+    return PlayResult::NothingToPlay;
+  }
+
+  auto cstrCompare = [](const char* s1, const char* s2) { return strcmp(s1, s2) < 0; };
+  std::sort(files_.begin(), files_.end(), cstrCompare);
+  Serial.printf("Queue:\n");
+  for (auto x : files_) {
+    Serial.printf("  %s\n", x);
+  }
+  if (lastTrack > 0 && lastTrack < (int)files_.size()) {
+    Serial.printf("Jump to track %d\n", lastTrack);
+    currentFile_ = lastTrack - 1;
+  } else {
+    Serial.printf("Start queue from start\n");
+    resumePosition_ = 0;
+  }
+  return playNext() ? PlayResult::Started : PlayResult::NothingToPlay;
+}
+
+Player::UpdateResult Player::update(unsigned long now) {
+  if (!mp3_->isRunning()) {
+    return UpdateResult::StalledError;
+  }
+  if (!mp3_->loop()) {
+    return playNext() ? UpdateResult::TrackAdvanced : UpdateResult::QueueFinished;
+  }
+  if (now - lastPositionSaveMillis_ >= POSITION_SAVE_INTERVAL) {
+    lastPositionSaveMillis_ = now;
+    saveCurrentPosition();
+  }
+  return UpdateResult::Playing;
+}
+
+int64_t Player::setGainRaw(int64_t gain) {
+  if (gain < MinAudioGain) gain = MinAudioGain;
+  if (gain > MaxAudioGain) gain = MaxAudioGain;
+  gain_ = gain;
+  Serial.printf("Volume: %lld\n", (long long)gain_);
+  output_->SetGain(gain_ / 100.0);
+  return gain_;
+}
+
+void Player::volumeUp() { setGainRaw(gain_ + 2); }
+void Player::volumeDown() { setGainRaw(gain_ - 2); }
+
+const char* Player::currentTrackPath() const {
+  if (currentFile_ < 0 || currentFile_ >= (int)files_.size()) return "";
+  return files_[currentFile_];
+}
