@@ -1,5 +1,7 @@
 #include "Controls.h"
 
+#define LOG_TAG "Controls"
+
 Controls controls;
 
 void Controls::begin(Player& player, PlayAttemptHandler onPlayAttempt) {
@@ -36,8 +38,7 @@ void Controls::tick() {
     lastEncoderCount_ = applied;
     rotaryGain_.clearCount();
     rotaryGain_.setCount(applied);
-    Serial.print("Set gain: ");
-    Serial.println((long)applied);
+    LOGF("Set gain: %lld\n", (long long)applied);
   }
 #endif
 }

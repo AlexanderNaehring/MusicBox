@@ -10,6 +10,8 @@
 #include "MusicBoxBLE.h"
 #endif
 
+#define LOG_TAG "Battery"
+
 #define BATTERY_SAMPLES 10
 #define BATTERY_ADC_CHANNEL ADC1_CHANNEL_0  // GPIO36
 
@@ -44,7 +46,7 @@ float BatteryMonitor::readPercent() {
   if (pct < 0) pct = 0;
   if (pct > 100) pct = 100;
 
-  Serial.printf("Battery: %.2f V (%.0f%%)\n", voltage, pct);
+  LOGF("Battery: %.2f V (%.0f%%)\n", voltage, pct);
 #if BLE
   bleInfo.setBatteryPct(pct);
 #endif

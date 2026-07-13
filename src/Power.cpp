@@ -5,6 +5,8 @@
 
 #include "Config.h"
 
+#define LOG_TAG "Power"
+
 namespace Power {
 
 void printWakeupReason() {
@@ -12,22 +14,22 @@ void printWakeupReason() {
 
   switch (wakeup_reason) {
     case ESP_SLEEP_WAKEUP_EXT0:
-      Serial.println("Wakeup caused by external signal using RTC_IO");
+      LOGLN("Wakeup caused by external signal using RTC_IO");
       break;
     case ESP_SLEEP_WAKEUP_EXT1:
-      Serial.println("Wakeup caused by external signal using RTC_CNTL");
+      LOGLN("Wakeup caused by external signal using RTC_CNTL");
       break;
     case ESP_SLEEP_WAKEUP_TIMER:
-      Serial.println("Wakeup caused by timer");
+      LOGLN("Wakeup caused by timer");
       break;
     case ESP_SLEEP_WAKEUP_TOUCHPAD:
-      Serial.println("Wakeup caused by touchpad");
+      LOGLN("Wakeup caused by touchpad");
       break;
     case ESP_SLEEP_WAKEUP_ULP:
-      Serial.println("Wakeup caused by ULP program");
+      LOGLN("Wakeup caused by ULP program");
       break;
     default:
-      Serial.printf("Wakeup was not caused by sleep: %d\n", wakeup_reason);
+      LOGF("Wakeup was not caused by sleep: %d\n", wakeup_reason);
       break;
   }
 }
@@ -43,11 +45,11 @@ void lightSleep(uint64_t timeout_ms, uint8_t wakeup_pin, int level) {
   if (wakeup_pin != UINT8_MAX) esp_sleep_enable_ext0_wakeup((gpio_num_t)wakeup_pin, level);
   if (timeout_ms > 0) esp_sleep_enable_timer_wakeup(timeout_ms * 1000);  // 100 ms
 
-  Serial.println("light sleep...");
+  LOGLN("light sleep...");
   if (ESP_OK == esp_light_sleep_start()) {
     printWakeupReason();
   } else {
-    Serial.println("Error going to light sleep");
+    LOGLN("Error going to light sleep");
   }
 }
 
@@ -58,7 +60,7 @@ void shutdown(DeviceState currentState, uint8_t wakeup_pin, int level) {
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   if (wakeup_pin != UINT8_MAX) esp_sleep_enable_ext0_wakeup((gpio_num_t)wakeup_pin, level);
   shutdownDeviceState = currentState;
-  Serial.println("Going to deep sleep...");
+  LOGLN("Going to deep sleep...");
   esp_deep_sleep_start();
 }
 

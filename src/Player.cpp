@@ -2,6 +2,10 @@
 
 #include <algorithm>
 
+#include "Config.h"
+
+#define LOG_TAG "Player"
+
 #define MinAudioGain 2
 #define MaxAudioGain 52
 #define InitialAudioGain 8
@@ -30,10 +34,10 @@ void Player::begin(fs::FS& fs, AudioOutputI2S* output) {
 }
 
 void Player::reinitAudioSource() {
-  Serial.printf("Re-init audio source...");
+  LOGF("Re-init audio source...");
   if (mp3_ && mp3_->isRunning()) mp3_->stop();
 
-  Serial.printf(" delete audio sources...");
+  LOGF(" delete audio sources...");
   delete sourceFs_;
   sourceFs_ = nullptr;
   delete sourceBuffer_;
@@ -41,29 +45,29 @@ void Player::reinitAudioSource() {
   delete sourceId3_;
   sourceId3_ = nullptr;
 
-  Serial.printf(" create sources...");
+  LOGF(" create sources...");
   sourceFs_ = new AudioFileSourceFS(*fs_);
   sourceBuffer_ = new AudioFileSourceBuffer(sourceFs_, AUDIO_SOURCE_BUFFER_SIZE);
   // ID3 file source for MP3 files reduces the delay until playback starts, and
   // enables ID3 Tag callbacks
   sourceId3_ = new AudioFileSourceID3(sourceBuffer_);
-  Serial.printf(" done\n");
+  LOGF(" done\n");
 }
 
 void Player::stop() {
-  Serial.printf("stop()\n");
+  LOGF("stop()\n");
   if (mp3_ && mp3_->isRunning()) {
-    Serial.printf("   mp3->stop()\n");
+    LOGF("   mp3->stop()\n");
     mp3_->stop();
   }
   if (files_.size() > 0) {
-    Serial.printf("  clear files list\n");
+    LOGF("  clear files list\n");
     for (char* x : files_) {
       free((void*)x);
     }
     files_.clear();
   }
-  Serial.printf("  reset flags\n");
+  LOGF("  reset flags\n");
   currentFile_ = -1;
   if (currentFolder_) {
     free(currentFolder_);
@@ -77,18 +81,18 @@ void Player::addFileToQueue(fs::File file) {
   // especially once a "." was involved). Copy the raw bytes by hand instead.
   const char* tmp = file.path();
   if (strcmp(strRight(tmp, 4), ".mp3")) {
-    Serial.printf("Skip %s, files must end with .mp3\n", tmp);
+    LOGF("Skip %s, files must end with .mp3\n", tmp);
     return;
   }
   char* path = (char*)malloc((strlen(tmp) + 1) * sizeof(char));
   strcpy(path, file.path());
-  Serial.printf("Add to queue: %s\n", path);
+  LOGF("Add to queue: %s\n", path);
   files_.push_back(path);
 }
 
 void Player::addFolderToQueue(fs::File root) {
   if (!root.isDirectory()) {
-    Serial.println("Not a directory");
+    LOGLN("Not a directory");
     return;
   }
 
@@ -109,14 +113,13 @@ void Player::persistPosition(int64_t trackIdx, int64_t position) {
   PlaybackPosition state{trackIdx, position};
   File file = fs_->open(lastTrackFile_, "w");
   if (!file) {
-    Serial.printf("persistPosition: failed to open %s for writing\n", lastTrackFile_);
+    LOGF("persistPosition: failed to open %s for writing\n", lastTrackFile_);
     return;
   }
   size_t written = file.write((const uint8_t*)&state, sizeof(state));
   file.close();
-  Serial.printf("persistPosition: wrote trackIdx=%lld position=%lld (%u bytes) to %s\n",
-                (long long)state.trackIdx, (long long)state.position, (unsigned)written,
-                lastTrackFile_);
+  LOGF("persistPosition: wrote trackIdx=%lld position=%lld (%u bytes) to %s\n",
+       (long long)state.trackIdx, (long long)state.position, (unsigned)written, lastTrackFile_);
 }
 
 bool Player::loadPersistedPosition(int64_t& trackIdx, int64_t& position) {
@@ -127,35 +130,35 @@ bool Player::loadPersistedPosition(int64_t& trackIdx, int64_t& position) {
   }
   File file = fs_->open(lastTrackFile_);
   if (!file) {
-    Serial.printf("loadPersistedPosition: %s not found\n", lastTrackFile_);
+    LOGF("loadPersistedPosition: %s not found\n", lastTrackFile_);
     return false;
   }
   PlaybackPosition state{0, 0};
   size_t bytesRead = file.read((uint8_t*)&state, sizeof(state));
   file.close();
   if (bytesRead != sizeof(state)) {
-    Serial.printf("loadPersistedPosition: %s has unexpected size (%u bytes, expected %u)\n",
-                  lastTrackFile_, (unsigned)bytesRead, (unsigned)sizeof(state));
+    LOGF("loadPersistedPosition: %s has unexpected size (%u bytes, expected %u)\n", lastTrackFile_,
+         (unsigned)bytesRead, (unsigned)sizeof(state));
     return false;
   }
   trackIdx = state.trackIdx;
   position = state.position;
-  Serial.printf("loadPersistedPosition: read trackIdx=%lld position=%lld from %s\n",
-                (long long)trackIdx, (long long)position, lastTrackFile_);
+  LOGF("loadPersistedPosition: read trackIdx=%lld position=%lld from %s\n", (long long)trackIdx,
+       (long long)position, lastTrackFile_);
   return true;
 }
 
 void Player::saveCurrentPosition() { persistPosition(currentFile_, sourceId3_->getPos()); }
 
 bool Player::playNext() {
-  Serial.println("playNext()");
+  LOGLN("playNext()");
   if (files_.size() <= 0) {
-    Serial.printf("Queue empty\n");
+    LOGF("Queue empty\n");
     return false;
   }
   if (currentFile_ >= (int)files_.size() - 1) {
-    Serial.printf("End of queue (%d, %u)\n", currentFile_, (unsigned)files_.size());
-    persistPosition(0, 0);
+    LOGF("End of queue (%d, %u)\n", currentFile_, (unsigned)files_.size());
+    persistPosition(-1, 0);
     stop();
     return false;
   }
@@ -169,11 +172,11 @@ bool Player::playNext() {
   // start playback
   reinitAudioSource();
   sourceFs_->open(filepath);
-  Serial.printf("mp3->begin() %s\n", filepath);
+  LOGF("mp3->begin() %s\n", filepath);
   mp3_->begin(sourceId3_, output_);
 
   if (resumePosition_ > 0) {
-    Serial.printf("Resuming at byte position %lu\n", (unsigned long)resumePosition_);
+    LOGF("Resuming at byte position %lu\n", (unsigned long)resumePosition_);
     sourceId3_->seek(resumePosition_, SEEK_SET);
   }
   resumePosition_ = 0;
@@ -184,22 +187,22 @@ bool Player::playNext() {
 }
 
 bool Player::playPrev() {
-  Serial.println("playPrev()");
+  LOGLN("playPrev()");
   if (files_.size() <= 0) {
-    Serial.printf("Cannot play, queue empty\n");
+    LOGF("Cannot play, queue empty\n");
     return false;
   }
 
   // check if more than x seconds into the current file
   if ((millis() - lastPlayMillis_) > 10000) {
-    Serial.printf("Play current file from start");
+    LOGF("Play current file from start");
     currentFile_--;
     return playNext();
   }
 
   // already at first file in queue?
   if (currentFile_ <= 0) {
-    Serial.printf("Beginning of queue, restart current file\n");
+    LOGF("Beginning of queue, restart current file\n");
     currentFile_--;
     return playNext();
   }
@@ -210,19 +213,19 @@ bool Player::playPrev() {
 }
 
 bool Player::playFirst() {
-  Serial.println("playFirst()");
+  LOGLN("playFirst()");
   currentFile_ = -1;
   return playNext();
 }
 
 Player::PlayResult Player::playPathOrFolder(const char* path) {
-  Serial.printf("playPathOrFolder(%s)\n", path);
+  LOGF("playPathOrFolder(%s)\n", path);
   stop();
   int lastTrack = 0;
 
   File root = fs_->open(path);
   if (!root) {
-    Serial.printf("Failed to open %s\n", path);
+    LOGF("Failed to open %s\n", path);
     return PlayResult::OpenFailed;
   }
 
@@ -254,15 +257,15 @@ Player::PlayResult Player::playPathOrFolder(const char* path) {
 
   auto cstrCompare = [](const char* s1, const char* s2) { return strcmp(s1, s2) < 0; };
   std::sort(files_.begin(), files_.end(), cstrCompare);
-  Serial.printf("Queue:\n");
+  LOGF("Queue:\n");
   for (auto x : files_) {
-    Serial.printf("  %s\n", x);
+    LOGF("  %s\n", x);
   }
   if (lastTrack > 0 && lastTrack < (int)files_.size()) {
-    Serial.printf("Jump to track %d\n", lastTrack);
+    LOGF("Jump to track %d\n", lastTrack);
     currentFile_ = lastTrack - 1;
   } else {
-    Serial.printf("Start queue from start\n");
+    LOGF("Start queue from start\n");
     resumePosition_ = 0;
   }
   return playNext() ? PlayResult::Started : PlayResult::NothingToPlay;
@@ -286,7 +289,7 @@ int64_t Player::setGainRaw(int64_t gain) {
   if (gain < MinAudioGain) gain = MinAudioGain;
   if (gain > MaxAudioGain) gain = MaxAudioGain;
   gain_ = gain;
-  Serial.printf("Volume: %lld\n", (long long)gain_);
+  LOGF("Volume: %lld\n", (long long)gain_);
   output_->SetGain(gain_ / 100.0);
   return gain_;
 }

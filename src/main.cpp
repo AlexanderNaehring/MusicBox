@@ -25,8 +25,10 @@
 #include "MusicBoxWifiDownloader.h"
 #endif
 
+#define LOG_TAG "main"
+
 void debugPrint(String msg) {
-  if (DEBUG) Serial.println(msg);
+  if (DEBUG) LOGLN(msg);
 #if BLE
   sendBleLog(msg + String("\n"));
 #endif
@@ -71,13 +73,13 @@ static void afterPlayAttempt(bool started) {
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Welcome to MusicBox");
-  Serial.printf("Built from git commit %s on %s at %s\n", GIT_COMMIT, __DATE__, __TIME__);
+  LOGLN("Welcome to MusicBox");
+  LOGF("Built from git commit %s on %s at %s\n", GIT_COMMIT, __DATE__, __TIME__);
 
   Power::printWakeupReason();
   battery.begin();
 
-  Serial.printf("Last shutdown state: %s\n", toString(shutdownDeviceState).c_str());
+  LOGF("Last shutdown state: %s\n", toString(shutdownDeviceState).c_str());
 
   board.begin();
   stateMachine.onChange([](DeviceState newState) {
@@ -92,13 +94,13 @@ void setup() {
   controls.begin(player, afterPlayAttempt);
 
   // SD card
-  Serial.println("SD_SPI...");
+  LOGLN("SD_SPI...");
   spi_sd.begin(SD_SCK, SD_MISO, SD_MOSI, SD_CS);
-  Serial.println("Try connecting SD with 40 MHz...");
+  LOGLN("Try connecting SD with 40 MHz...");
   if (!SD.begin(SD_CS, spi_sd, 40000000)) {
-    Serial.println("Try connecting SD with 25 MHz...");
+    LOGLN("Try connecting SD with 25 MHz...");
     if (!SD.begin(SD_CS, spi_sd)) {
-      Serial.println("Error: SD card mount failed");
+      LOGLN("Error: SD card mount failed");
       return;
     }
   }
@@ -110,33 +112,33 @@ void setup() {
 
   // Audio
   audioLogger = &Serial;
-  Serial.println("Audio...");
+  LOGLN("Audio...");
   board.beginAudioOutput();
   player.begin(SD, board.audioOutput());
 
 // BLE
 #if BLE
-  Serial.println("BLE...");
+  LOGLN("BLE...");
   setupBLE("MusicBox");
 #endif
 
 // WIFI
 #if WIFI
   if (digitalRead(BTN_PREV) == LOW) {
-    Serial.println("BTN_PREV pressed, start WIFI setup mode");
+    LOGLN("BTN_PREV pressed, start WIFI setup mode");
     setupWifi(SD);
   } else {
-    Serial.println("BTN_PREV not pressed, skip WIFI setup");
+    LOGLN("BTN_PREV not pressed, skip WIFI setup");
     WiFi.mode(WIFI_OFF);
   }
 #endif
 
-  Serial.println("Setup ready...");
+  LOGLN("Setup ready...");
   stateMachine.set(DeviceState::IDLE);
 
   esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
   if (wakeup_reason != 0 && shutdownDeviceState == DeviceState::STOPPED) {
-    Serial.println("Woke up after previous STOPPED state");
+    LOGLN("Woke up after previous STOPPED state");
     stateMachine.set(DeviceState::STOPPED);
   }
 }
@@ -201,7 +203,7 @@ void loop() {
           contentReady = ensureContentAvailable(SD, filePath.c_str());
 #endif
           if (!contentReady) {
-            Serial.printf("Content unavailable for '%s'\n", filePath.c_str());
+            LOGF("Content unavailable for '%s'\n", filePath.c_str());
             stateMachine.set(DeviceState::ERROR);
             break;
           }
@@ -242,7 +244,7 @@ void loop() {
           break;
         case Player::UpdateResult::StalledError:
           // Audio stopped unexpectedly - maybe SD card error
-          Serial.println("Audio stopped unexpectedly");
+          LOGLN("Audio stopped unexpectedly");
           stateMachine.set(DeviceState::STOPPED);
           board.setLED(RGB_Error);
           break;
@@ -286,14 +288,14 @@ void loop() {
 
     /////////////////////////////////////////////////////////////////////////////////
     case DeviceState::ERROR:
-      Serial.println("ERROR STATE - restarting in 10 seconds...");
+      LOGLN("ERROR STATE - restarting in 10 seconds...");
       board.setLED(RGB_Error);
       delay(10000);
       ESP.restart();
       break;
     /////////////////////////////////////////////////////////////////////////////////
     case DeviceState::SETUP:
-      Serial.println("ERROR - invalid state SETUP during loop()");
+      LOGLN("ERROR - invalid state SETUP during loop()");
       // fall through
     default:
       stateMachine.set(DeviceState::ERROR);

@@ -48,7 +48,8 @@ class StateMachine {
 
   void set(DeviceState newState) {
     if (current_ == newState) return;
-    Serial.printf("State: %s -> %s\n", toString(current_).c_str(), toString(newState).c_str());
+    Serial.printf("[DeviceState] State: %s -> %s\n", toString(current_).c_str(),
+                  toString(newState).c_str());
     current_ = newState;
     lastSwitchMillis_ = millis();
     if (onChange_) onChange_(newState);

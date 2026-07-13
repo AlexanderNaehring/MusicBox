@@ -2,6 +2,8 @@
 
 #include "Board.h"
 
+#define LOG_TAG "Nfc"
+
 #define RFID_CHECK_INTERVAL 50
 
 Nfc nfcReader;
@@ -9,13 +11,13 @@ Nfc nfcReader;
 Nfc::Nfc() : mfrc522_(RFID_CS, UINT8_MAX, spi_rfid), nfc_(&mfrc522_) {}
 
 bool Nfc::begin() {
-  Serial.println("RFID...");
+  LOGLN("RFID...");
   spi_rfid.begin(RFID_SCK, RFID_MISO, RFID_MOSI, RFID_CS);
   mfrc522_.PCD_Init();
   // code from mfrc522.PCD_DumpVersionToSerial();
   byte v = mfrc522_.PCD_ReadRegister(mfrc522_.VersionReg);
   if ((v == 0x00) || (v == 0xFF)) {
-    Serial.println(F("WARNING: MFRC522 communication failure, is the MFRC522 properly connected?"));
+    LOGLN(F("WARNING: MFRC522 communication failure, is the MFRC522 properly connected?"));
     return false;
   }
   nfc_.begin();
@@ -37,10 +39,9 @@ Nfc::PollResult Nfc::poll(unsigned long now, String& outPath) {
     return PollResult::NoTag;
   }
 
-  Serial.println("RFID detected");
+  LOGLN("RFID detected");
   NfcTag tag = nfc_.read();
-  Serial.print("UID: ");
-  Serial.println(tag.getUidString());
+  LOGF("UID: %s\n", tag.getUidString().c_str());
 
   memset(&currentUid_, 0, MAX_UID_LEN);
   currentUidLen_ = MAX_UID_LEN;
@@ -48,7 +49,7 @@ Nfc::PollResult Nfc::poll(unsigned long now, String& outPath) {
 
   if (memcmp(lastUid_, currentUid_, currentUidLen_) == 0) {
     // Same card
-    Serial.println("resume playback");
+    LOGLN("resume playback");
     return PollResult::SameTagResumed;
   }
 
@@ -57,7 +58,7 @@ Nfc::PollResult Nfc::poll(unsigned long now, String& outPath) {
   forget();
 
   if (!tag.hasNdefMessage()) {
-    Serial.println("NFC Tag has no NDEF message");
+    LOGLN("NFC Tag has no NDEF message");
     return PollResult::InvalidTag;
   }
 
@@ -70,12 +71,12 @@ Nfc::PollResult Nfc::poll(unsigned long now, String& outPath) {
   // NdefRecord record = message[i]; // alternate syntax
 
   if (record.getTnf() != NdefRecord::TNF::TNF_WELL_KNOWN) {
-    Serial.println("NDEF TNF record is not WELL_KNOWN");
+    LOGLN("NDEF TNF record is not WELL_KNOWN");
     return PollResult::UnsupportedRecord;
   }
 
   if (record.getTypeLength() != 1 || ((char*)record.getType())[0] != 'T') {
-    Serial.println("NDEF record has incorrect type.");
+    LOGLN("NDEF record has incorrect type.");
     return PollResult::UnsupportedRecord;
   }
 
@@ -87,7 +88,7 @@ Nfc::PollResult Nfc::poll(unsigned long now, String& outPath) {
   for (int c = 1 + languageLen; c < payloadLength; c++) {
     filePath += (char)payload[c];
   }
-  Serial.printf("Path: %s\n", filePath.c_str());
+  LOGF("Path: %s\n", filePath.c_str());
 
   outPath = filePath;
   return PollResult::NewTagPath;
