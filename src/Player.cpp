@@ -12,6 +12,10 @@
 #define AUDIO_SOURCE_BUFFER_SIZE 1024 * 4
 #define POSITION_SAVE_INTERVAL 30000  // 30 seconds
 #define LAST_PLAYBACK_FILE_SUFFIX "/last.int64"
+// Ignore gaps between update() ticks larger than this for bitrate estimate
+#define PAUSE_GAP_THRESHOLD_MS 2000
+// Minimum accumulated actual playback time before trusting bitrate estimate
+#define MIN_CALIBRATION_MS 800
 
 Player player;
 
@@ -183,6 +187,12 @@ bool Player::playNext() {
 
   lastPlayMillis_ = millis();
   lastPositionSaveMillis_ = lastPlayMillis_;
+
+  // New file - the previous bytes/sec estimate (if any) no longer applies.
+  trackStartBytePos_ = sourceId3_->getPos();
+  playedMillisAccum_ = 0;
+  lastCalibrationMillis_ = lastPlayMillis_;
+  bytesPerSecondEstimate_ = PLAYER_FALLBACK_BYTES_PER_SECOND;
   return true;
 }
 
@@ -216,6 +226,45 @@ bool Player::playFirst() {
   LOGLN("playFirst()");
   currentFile_ = -1;
   return playNext();
+}
+
+Player::SeekResult Player::seekBySeconds(int32_t deltaSeconds) {
+  if (!mp3_ || !mp3_->isRunning() || currentFile_ < 0 || (size_t)currentFile_ >= files_.size()) {
+    return SeekResult::NotPlaying;
+  }
+  if (bytesPerSecondEstimate_ <= 0) {
+    LOGLN("seekBySeconds: no valid bytes/sec estimate, ignoring");
+    return SeekResult::NoEstimate;
+  }
+
+  int32_t byteDelta = (int32_t)(deltaSeconds * bytesPerSecondEstimate_);
+  if (byteDelta == 0) return SeekResult::Seeked;
+
+  uint32_t currentPos = sourceId3_->getPos();
+  uint32_t fileSize = sourceId3_->getSize();
+  int64_t newPos = (int64_t)currentPos + byteDelta;
+  SeekResult result = SeekResult::Seeked;
+  if (newPos <= 0) {
+    newPos = 0;
+    result = SeekResult::HitStart;
+  }
+  if (fileSize > 0 && newPos >= (int64_t)fileSize) newPos = fileSize - 1;
+
+  LOGF("seekBySeconds(%d): rate=%.0f B/s, pos %lu -> %lld\n", (int)deltaSeconds,
+       bytesPerSecondEstimate_, (unsigned long)currentPos, (long long)newPos);
+
+  sourceId3_->seek((int32_t)newPos, SEEK_SET);
+  mp3_->desync();
+
+  // Restart the playback-time/byte baseline from here, but keep
+  // bytesPerSecondEstimate_ - it's still valid for the same file.
+  trackStartBytePos_ = sourceId3_->getPos();
+  playedMillisAccum_ = 0;
+  lastCalibrationMillis_ = millis();
+  lastPositionSaveMillis_ = lastCalibrationMillis_;
+
+  // persistPosition(currentFile_, (int64_t)newPos);
+  return result;
 }
 
 Player::PlayResult Player::playPathOrFolder(const char* path) {
@@ -275,6 +324,21 @@ Player::UpdateResult Player::update(unsigned long now) {
   if (!mp3_->isRunning()) {
     return UpdateResult::StalledError;
   }
+
+  // Accumulate actual playback time (not wall-clock time since track start)
+  // so a paused stretch doesn't skew the bytes/sec estimate: a gap between
+  // ticks larger than PAUSE_GAP_THRESHOLD_MS means playback was paused in
+  // between and is simply not counted.
+  unsigned long tickMillis = now - lastCalibrationMillis_;
+  lastCalibrationMillis_ = now;
+  if (tickMillis < PAUSE_GAP_THRESHOLD_MS) {
+    playedMillisAccum_ += tickMillis;
+    if (playedMillisAccum_ >= MIN_CALIBRATION_MS) {
+      uint32_t bytesSinceTrackStart = sourceId3_->getPos() - trackStartBytePos_;
+      bytesPerSecondEstimate_ = bytesSinceTrackStart * 1000.0 / playedMillisAccum_;
+    }
+  }
+
   if (!mp3_->loop()) {
     return playNext() ? UpdateResult::TrackAdvanced : UpdateResult::QueueFinished;
   }

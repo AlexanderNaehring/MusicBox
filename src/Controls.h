@@ -43,6 +43,9 @@ class Controls {
 #endif
 
  private:
+  void seekForward();
+  void seekBack();
+
   Player* player_ = nullptr;
   PlayAttemptHandler onPlayAttempt_;
 

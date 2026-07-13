@@ -12,6 +12,12 @@
 #include "AudioGeneratorMP3.h"
 #include "AudioOutputI2S.h"
 
+// Fallback bytes/sec estimate for seekBySeconds() until update() has
+// calibrated the real rate (see Player.cpp's MIN_CALIBRATION_MS).
+// Deliberately on the low side, so an uncalibrated seek undershoots rather
+// than overshoots - doesn't need to be accurate, just a reasonable guess.
+#define PLAYER_FALLBACK_BYTES_PER_SECOND (96000 / 8)  // 96 kbit/s
+
 // Owns the playback queue, the ESP8266Audio decode pipeline, gain, and
 // playback-position persistence. Deliberately knows nothing about the device
 // state machine, the LED, NFC, or BLE: playNext()/playPrev()/playFirst()
@@ -44,6 +50,22 @@ class Player {
   // Persists the live playback position of the current track, e.g. when the
   // card is pulled mid-play.
   void saveCurrentPosition();
+
+  enum class SeekResult {
+    Seeked,      // Seeked to the requested position (or end of file).
+    HitStart,    // Negative seek clamped to the beginning of file
+    NotPlaying,  // Nothing is currently playing; no seek was attempted.
+    NoEstimate   // No valid bitrate estimate available
+  };
+
+  // Jumps forward (positive) or backward (negative) within the current
+  // track by roughly `deltaSeconds`, clamped to the file's bounds. Converts
+  // seconds to a byte offset using a bytes/sec rate estimated from actual
+  // playback (see update()), falling back to PLAYER_FALLBACK_BYTES_PER_SECOND
+  // until that's calibrated - MP3 doesn't carry an exact duration, and this
+  // is intended for large single-file tracks (e.g. audiobooks) where
+  // playNext()/playPrev() would otherwise skip to a different file.
+  SeekResult seekBySeconds(int32_t deltaSeconds);
 
   void volumeUp();
   void volumeDown();
@@ -83,6 +105,13 @@ class Player {
   uint32_t resumePosition_ = 0;
   unsigned long lastPositionSaveMillis_ = 0;
   int64_t gain_ = 0;
+
+  // bitrate calibration for seekBySeconds(), refreshed in update(). 
+  // Reset whenever a new track starts; NOT reset by seekBySeconds() itself
+  uint32_t trackStartBytePos_ = 0;
+  unsigned long playedMillisAccum_ = 0;
+  unsigned long lastCalibrationMillis_ = 0;
+  double bytesPerSecondEstimate_ = PLAYER_FALLBACK_BYTES_PER_SECOND;
 };
 
 extern Player player;

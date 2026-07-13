@@ -2,6 +2,8 @@
 
 #define LOG_TAG "Controls"
 
+#define SEEK_STEP_SECONDS 120  // 2 minutes
+
 Controls controls;
 
 void Controls::begin(Player& player, PlayAttemptHandler onPlayAttempt) {
@@ -25,6 +27,23 @@ void Controls::begin(Player& player, PlayAttemptHandler onPlayAttempt) {
   rotaryGain_.setCount(player_->gain());
   lastEncoderCount_ = player_->gain();
 #endif
+}
+
+// Check if the seekResult counts as "success" (still playing)
+static bool seekSucceeded(Player::SeekResult result) {
+  return result == Player::SeekResult::Seeked || result == Player::SeekResult::HitStart;
+}
+
+void Controls::seekForward() { onPlayAttempt_(seekSucceeded(player_->seekBySeconds(SEEK_STEP_SECONDS))); }
+
+void Controls::seekBack() {
+  Player::SeekResult result = player_->seekBySeconds(-SEEK_STEP_SECONDS);
+  if (result == Player::SeekResult::HitStart) {
+    LOGLN("Hit start of file, call playPrev()");
+    onPlayAttempt_(player_->playPrev());
+  } else {
+    onPlayAttempt_(seekSucceeded(result));
+  }
 }
 
 void Controls::tick() {
@@ -54,7 +73,7 @@ void Controls::handleNextLongPress() {
       onPlayAttempt_(player_->playFirst());
     }
   } else {
-    onPlayAttempt_(player_->playNext());
+    seekForward();
   }
 }
 
@@ -65,14 +84,14 @@ void Controls::handlePrevLongPress() {
       onPlayAttempt_(player_->playFirst());
     }
   } else {
-    onPlayAttempt_(player_->playPrev());
+    seekBack();
   }
 }
 
 void Controls::handleBothHeldReleased() { bothHeldHandled_ = false; }
 
 #elif HW_REV == 2
-void Controls::handleNextClick() { onPlayAttempt_(player_->playNext()); }
-void Controls::handlePrevClick() { onPlayAttempt_(player_->playPrev()); }
+void Controls::handleNextClick() { seekForward(); }
+void Controls::handlePrevClick() { seekBack(); }
 void Controls::handlePlayFirst() { onPlayAttempt_(player_->playFirst()); }
 #endif
