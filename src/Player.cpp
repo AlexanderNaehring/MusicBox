@@ -262,7 +262,7 @@ Player::SeekResult Player::seekBySeconds(int32_t deltaSeconds) {
   playedMillisAccum_ = 0;
   lastCalibrationMillis_ = millis();
 
-  // lastPositionSaveMillis_ = lastCalibrationMillis_;
+  lastPositionSaveMillis_ = lastCalibrationMillis_;
   // persistPosition(currentFile_, (int64_t)newPos);
   return result;
 }
