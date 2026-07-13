@@ -2,7 +2,7 @@
 
 #define LOG_TAG "Controls"
 
-#define SEEK_STEP_SECONDS 120  // 2 minutes
+#define SEEK_STEP_SECONDS 120
 
 Controls controls;
 
@@ -12,11 +12,15 @@ void Controls::begin(Player& player, PlayAttemptHandler onPlayAttempt) {
 
 #if HW_REV == 1
   btnNext_.attachClick([]() { controls.handleVolumeUpClick(); });
-  btnNext_.attachLongPressStart([]() { controls.handleNextLongPress(); });
+  btnNext_.attachDuringLongPress([]() { controls.handleNextLongPress(); });
   btnNext_.attachLongPressStop([]() { controls.handleBothHeldReleased(); });
+  btnNext_.setPressMs(600);
+  btnNext_.setLongPressIntervalMs(1000);
   btnPrev_.attachClick([]() { controls.handleVolumeDownClick(); });
-  btnPrev_.attachLongPressStart([]() { controls.handlePrevLongPress(); });
+  btnPrev_.attachDuringLongPress([]() { controls.handlePrevLongPress(); });
   btnPrev_.attachLongPressStop([]() { controls.handleBothHeldReleased(); });
+  btnPrev_.setPressMs(600);
+  btnPrev_.setLongPressIntervalMs(1000);
 #elif HW_REV == 2
   btnNext_.attachClick([]() { controls.handleNextClick(); });
   btnPrev_.attachClick([]() { controls.handlePrevClick(); });
@@ -72,9 +76,9 @@ void Controls::handleNextLongPress() {
       bothHeldHandled_ = true;
       onPlayAttempt_(player_->playFirst());
     }
-  } else {
-    seekForward();
+    return;
   }
+  seekForward();
 }
 
 void Controls::handlePrevLongPress() {
@@ -83,9 +87,9 @@ void Controls::handlePrevLongPress() {
       bothHeldHandled_ = true;
       onPlayAttempt_(player_->playFirst());
     }
-  } else {
-    seekBack();
+    return;
   }
+  seekBack();
 }
 
 void Controls::handleBothHeldReleased() { bothHeldHandled_ = false; }
