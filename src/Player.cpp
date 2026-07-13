@@ -221,7 +221,7 @@ bool Player::playFirst() {
 Player::PlayResult Player::playPathOrFolder(const char* path) {
   LOGF("playPathOrFolder(%s)\n", path);
   stop();
-  int lastTrack = 0;
+  int lastTrack = -1;
 
   File root = fs_->open(path);
   if (!root) {
@@ -261,7 +261,7 @@ Player::PlayResult Player::playPathOrFolder(const char* path) {
   for (auto x : files_) {
     LOGF("  %s\n", x);
   }
-  if (lastTrack > 0 && lastTrack < (int)files_.size()) {
+  if (lastTrack >= 0 && lastTrack < (int)files_.size()) {
     LOGF("Jump to track %d\n", lastTrack);
     currentFile_ = lastTrack - 1;
   } else {
