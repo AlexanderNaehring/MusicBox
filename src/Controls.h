@@ -39,7 +39,7 @@ class Controls {
 #elif HW_REV == 2
   void handleNextClick();
   void handlePrevClick();
-  void handlePlayFirst();
+  void handlePrevLong();
 #endif
 
  private:

@@ -24,7 +24,7 @@ void Controls::begin(Player& player, PlayAttemptHandler onPlayAttempt) {
 #elif HW_REV == 2
   btnNext_.attachClick([]() { controls.handleNextClick(); });
   btnPrev_.attachClick([]() { controls.handlePrevClick(); });
-  btnPrev_.attachLongPressStart([]() { controls.handlePlayFirst(); });
+  btnPrev_.attachLongPressStart([]() { controls.handlePrevLong(); });
 
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
   rotaryGain_.attachHalfQuad(RotaryA, RotaryB);
@@ -97,5 +97,5 @@ void Controls::handleBothHeldReleased() { bothHeldHandled_ = false; }
 #elif HW_REV == 2
 void Controls::handleNextClick() { seekForward(); }
 void Controls::handlePrevClick() { seekBack(); }
-void Controls::handlePlayFirst() { onPlayAttempt_(player_->playFirst()); }
+void Controls::handlePrevLong() { onPlayAttempt_(player_->playFirst()); }
 #endif
