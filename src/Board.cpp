@@ -1,5 +1,10 @@
 #include "Board.h"
 
+#include "AudioFileSourceFS.h"
+#include "AudioGeneratorMP3.h"
+
+#define LOG_TAG "Board"
+
 SPIClass spi_sd(VSPI);
 SPIClass spi_rfid(HSPI);
 
@@ -42,3 +47,27 @@ void Board::showState(DeviceState state) {
 }
 
 void Board::beginAudioOutput() { audioOutput_ = new AudioOutputI2S(); }
+
+void Board::playCue(fs::FS& fs, const char* path) {
+  if (!audioOutput_ || !fs.exists(path)) {
+    LOGF("cue '%s' unavailable, skipping\n", path);
+    return;
+  }
+  LOGF("playing cue '%s'\n", path);
+
+  AudioFileSourceFS cueSource(fs);
+  if (!cueSource.open(path)) {
+    LOGF("failed to open cue '%s'\n", path);
+    return;
+  }
+  AudioGeneratorMP3 cueMp3;
+  if (!cueMp3.begin(&cueSource, audioOutput_)) {
+    LOGF("failed to start cue '%s'\n", path);
+    return;
+  }
+  while (cueMp3.isRunning()) {
+    if (!cueMp3.loop()) {
+      cueMp3.stop();
+    }
+  }
+}

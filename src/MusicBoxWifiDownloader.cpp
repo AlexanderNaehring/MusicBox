@@ -4,9 +4,6 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 
-#include "AudioFileSourceFS.h"
-#include "AudioGeneratorMP3.h"
-#include "AudioOutputI2S.h"
 #include "Board.h"
 
 #ifndef WIFI_SSID
@@ -181,33 +178,6 @@ static void disconnectWifi() {
   Serial.println("MusicBoxWifiDownloader: disconnecting WiFi...");
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
-}
-
-// ---- audio cues -------------------------------------------------------------------
-
-static void playCue(fs::FS& fs, const char* path) {
-  AudioOutputI2S* output = board.audioOutput();
-  if (!output || !fs.exists(path)) {
-    Serial.printf("MusicBoxWifiDownloader: cue '%s' unavailable, skipping\n", path);
-    return;
-  }
-  Serial.printf("MusicBoxWifiDownloader: playing cue '%s'\n", path);
-
-  AudioFileSourceFS cueSource(fs);
-  if (!cueSource.open(path)) {
-    Serial.printf("MusicBoxWifiDownloader: failed to open cue '%s'\n", path);
-    return;
-  }
-  AudioGeneratorMP3 cueMp3;
-  if (!cueMp3.begin(&cueSource, output)) {
-    Serial.printf("MusicBoxWifiDownloader: failed to start cue '%s'\n", path);
-    return;
-  }
-  while (cueMp3.isRunning()) {
-    if (!cueMp3.loop()) {
-      cueMp3.stop();
-    }
-  }
 }
 
 // ---- HTTP download -------------------------------------------------------------------
@@ -431,16 +401,16 @@ bool ensureContentAvailable(fs::FS& fs, const char* path) {
   cleanupDownloadCache(fs);
 
   if (!connectWifi()) {
-    playCue(fs, SOUND_DOWNLOAD_FAILED);
+    board.playCue(fs, SOUND_DOWNLOAD_FAILED);
     return false;
   }
 
-  playCue(fs, SOUND_DOWNLOAD_START);
+  board.playCue(fs, SOUND_DOWNLOAD_START);
 
   String remotePath(path);
   bool ok = isMp3Path(remotePath) ? downloadFile(fs, remotePath) : downloadFolder(fs, remotePath);
 
-  playCue(fs, ok ? SOUND_DOWNLOAD_SUCCESS : SOUND_DOWNLOAD_FAILED);
+  board.playCue(fs, ok ? SOUND_DOWNLOAD_SUCCESS : SOUND_DOWNLOAD_FAILED);
 
   disconnectWifi();
 

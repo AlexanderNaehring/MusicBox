@@ -2,6 +2,7 @@
 #define MUSICBOX_BOARD_H
 
 #include <Arduino.h>
+#include <FS.h>
 #include <SPI.h>
 
 #include "AudioOutputI2S.h"
@@ -50,6 +51,7 @@
 #define RGB_Error 200, 0, 0
 #define RGB_Play 0, 200, 0
 #define RGB_Pause 200, 200, 0
+#define RGB_LowBattery 200, 80, 0
 
 // SPI buses
 extern SPIClass spi_sd;
@@ -70,6 +72,12 @@ class Board {
   // handed to Player::begin().
   void beginAudioOutput();
   AudioOutputI2S* audioOutput() const { return audioOutput_; }
+
+  // Plays a single audio file to completion on the shared I2S output,
+  // independent of Player's queue - for one-off cue sounds (e.g. wifi
+  // download progress, low battery). Blocks until playback finishes. Logs
+  // and does nothing if `path` doesn't exist.
+  void playCue(fs::FS& fs, const char* path);
 
  private:
   AudioOutputI2S* audioOutput_ = nullptr;

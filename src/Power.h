@@ -15,7 +15,11 @@ void lightSleep(uint64_t timeout_ms = 1000, uint8_t wakeup_pin = UINT8_MAX, int 
 
 // Persists `currentState` into shutdownDeviceState (retained across deep
 // sleep) before powering down, so setup() can see what state we were in.
-void shutdown(DeviceState currentState, uint8_t wakeup_pin = UINT8_MAX, int level = 0);
+// Gated by AllowSleep unless `force` is set - for safety-critical shutdowns
+// (e.g. critical battery) that must work even while the general sleep
+// feature is disabled/untrusted.
+void shutdown(DeviceState currentState, uint8_t wakeup_pin = UINT8_MAX, int level = 0,
+              bool force = false);
 
 }  // namespace Power
 

@@ -34,9 +34,6 @@ void debugPrint(String msg) {
 #endif
 }
 
-#define BATTERY_CHECK_INTERVAL 60000  // 60 seconds
-static unsigned long lastBatteryCheck = 0;
-
 RTC_DATA_ATTR DeviceState shutdownDeviceState = DeviceState::SETUP;
 
 StateMachine stateMachine;
@@ -58,6 +55,29 @@ static void publishNowPlaying() {
 #endif
 }
 
+// Battery Low is a warning only - playback continues, the LED just blinks
+// (see loop()) and a cue plays once. Critical means further draw risks a
+// brownout or over-discharge, so nothing else matters: save position, stop
+// playback immediately (even mid-track), and deep-sleep as fast as
+// possible - bypassing AllowSleep, since this is safety, not the
+// experimental sleep feature.
+static void onBatteryLevelChange(BatteryLevel level) {
+  if (level == BatteryLevel::Low) {
+    LOGLN("Battery low");
+    board.playCue(SD, "/sounds/low_battery.mp3");
+  } else if (level == BatteryLevel::Critical) {
+    LOGLN("Battery critical - shutting down");
+    // Only PLAYING guarantees a track is actually loaded (sourceId3_ set) -
+    // this can fire from any state, including straight out of boot.
+    if (stateMachine.get() == DeviceState::PLAYING) {
+      player.saveCurrentPosition();
+    }
+    player.stop();
+    stateMachine.set(DeviceState::STOPPED);
+    Power::shutdown(DeviceState::STOPPED, UINT8_MAX, 0, /*force=*/true);
+  }
+}
+
 // Common landing point for every direct playNext()/playPrev()/playFirst()
 // attempt (buttons, BLE commands): translates the result into a state
 // transition, since Player itself has no notion of device state.
@@ -77,6 +97,7 @@ void setup() {
   LOGF("Built from git commit %s on %s at %s\n", GIT_COMMIT, __DATE__, __TIME__);
 
   Power::printWakeupReason();
+  battery.onLevelChange(onBatteryLevelChange);
   battery.begin();
 
   LOGF("Last shutdown state: %s\n", toString(shutdownDeviceState).c_str());
@@ -147,11 +168,31 @@ void loop() {
   unsigned long now = millis();
 
   controls.tick();
+  battery.tick();
 
-  // check battery every interval
-  if (now - lastBatteryCheck > BATTERY_CHECK_INTERVAL) {
-    lastBatteryCheck = now;
-    battery.readPercent();
+  // Low-battery LED blink: while Low, alternate the LED between the warning
+  // color and whatever the current state's color would be, every 500ms.
+  // Repaints the real state color once Low clears, since the blink writes
+  // to the LED outside StateMachine::onChange. 
+  {
+    static bool blinkOn = false;
+    static bool wasLow = false;
+    static unsigned long lastBlinkMillis = 0;
+    bool isLow = (battery.level() == BatteryLevel::Low);
+    if (isLow) {
+      if (now - lastBlinkMillis >= 500) {
+        lastBlinkMillis = now;
+        blinkOn = !blinkOn;
+        if (blinkOn) {
+          board.setLED(RGB_LowBattery);
+        } else {
+          board.showState(stateMachine.get());
+        }
+      }
+    } else if (wasLow) {
+      board.showState(stateMachine.get());
+    }
+    wasLow = isLow;
   }
 
   bool cardPresent = (digitalRead(BTN_CARD_INSIDE) == LOW);

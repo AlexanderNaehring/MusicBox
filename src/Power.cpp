@@ -53,9 +53,9 @@ void lightSleep(uint64_t timeout_ms, uint8_t wakeup_pin, int level) {
   }
 }
 
-void shutdown(DeviceState currentState, uint8_t wakeup_pin, int level) {
+void shutdown(DeviceState currentState, uint8_t wakeup_pin, int level, bool force) {
 #if !AllowSleep
-  return;
+  if (!force) return;
 #endif
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   if (wakeup_pin != UINT8_MAX) esp_sleep_enable_ext0_wakeup((gpio_num_t)wakeup_pin, level);
