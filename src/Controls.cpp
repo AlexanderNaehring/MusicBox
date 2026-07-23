@@ -58,9 +58,11 @@ void Controls::tick() {
   int64_t delta = rotaryGain_.getCount();
   rotaryGain_.clearCount();
   if (delta > 0 && delta <= MAX_ENCODER_STEPS_PER_TICK) {
-    for (int64_t i = 0; i < delta; i++) player_->volumeUp();
+    //for (int64_t i = 0; i < delta; i++) player_->volumeUp();
+    player_->volumeUp(); // just once per tick should be enough...
   } else if (delta < 0 && delta >= -MAX_ENCODER_STEPS_PER_TICK) {
-    for (int64_t i = 0; i > delta; i--) player_->volumeDown();
+    // for (int64_t i = 0; i > delta; i--) player_->volumeDown();
+    player_->volumeDown();
   } else if (delta != 0) {
     LOGF("Ignoring implausible encoder delta %lld\n", (long long)delta);
   }
