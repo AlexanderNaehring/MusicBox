@@ -30,6 +30,16 @@ class Nfc {
   // MusicBox's RFID_CHECK_INTERVAL, so it's cheap to call every tick.
   PollResult poll(unsigned long now, String& outPath);
 
+  // Decoded from the tag's optional second NDEF record (same plain-text
+  // record format as the path) the last time this tag was freshly read
+  // (NewTagPath) - defaults if the tag has no second record. Stays valid
+  // across SameTagResumed polls, since those don't redecode the tag.
+  struct PlaybackMode {
+    bool shuffle = false;
+    uint16_t autoSleepMinutes = 0;  // 0 = disabled
+  };
+  PlaybackMode currentMode() const { return currentMode_; }
+
   // Commits to the tag most recently reported via poll() (NewTagPath), so the
   // next poll() sees it as SameTagResumed instead of decoding it again.
   // Deliberately separate from poll() - the caller only knows once it has
@@ -49,6 +59,7 @@ class Nfc {
   byte lastUid_[MAX_UID_LEN] = {0};
   byte currentUid_[MAX_UID_LEN] = {0};
   byte currentUidLen_ = 0;
+  PlaybackMode currentMode_;
 };
 
 extern Nfc nfcReader;

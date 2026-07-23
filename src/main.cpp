@@ -78,6 +78,24 @@ static void onBatteryLevelChange(BatteryLevel level) {
   }
 }
 
+// Auto-sleep: an optional per-tag countdown (from the tag's second NDEF
+// record, see Nfc::PlaybackMode) that stops playback after a fixed
+// duration - e.g. falling asleep to an album instead of it playing all
+// night. Deliberately lives here, not in Player: it's about *when to stop*,
+// not how to play, and it needs to keep ticking across PAUSED (card pulled)
+// too, which Player has no visibility into.
+static bool autoSleepActive = false;
+static unsigned long autoSleepDeadlineMillis = 0;
+
+// Call on every fresh "card is now playing" transition - both a brand new
+// tag and the same tag being resumed after a pull count as restarting the
+// countdown from its full duration.
+static void resetAutoSleepTimer() {
+  Nfc::PlaybackMode mode = nfcReader.currentMode();
+  autoSleepActive = mode.autoSleepMinutes > 0;
+  autoSleepDeadlineMillis = millis() + (unsigned long)mode.autoSleepMinutes * 60000UL;
+}
+
 // Common landing point for every direct playNext()/playPrev()/playFirst()
 // attempt (buttons, BLE commands): translates the result into a state
 // transition, since Player itself has no notion of device state.
@@ -197,6 +215,20 @@ void loop() {
 
   bool cardPresent = (digitalRead(BTN_CARD_INSIDE) == LOW);
 
+  // Auto-sleep expiry: ticks continuously in wall-clock time regardless of
+  // PLAYING/PAUSED (see resetAutoSleepTimer()), so it can expire while the
+  // card is out too. Only meaningful while a tag is actually committed to.
+  if (autoSleepActive &&
+      (stateMachine.get() == DeviceState::PLAYING || stateMachine.get() == DeviceState::PAUSED) &&
+      (long)(now - autoSleepDeadlineMillis) >= 0) {
+    LOGLN("Auto-sleep timer expired");
+    autoSleepActive = false;
+    player.stop();
+    nfcReader.forget();
+    stateMachine.set(cardPresent ? DeviceState::STOPPED : DeviceState::IDLE);
+    board.setLED(RGB_SleepExpired);
+  }
+
   switch (stateMachine.get()) {
       /////////////////////////////////////////////////////////////////////////////////
     case DeviceState::IDLE:
@@ -226,6 +258,7 @@ void loop() {
           break;
 
         case Nfc::PollResult::SameTagResumed:
+          resetAutoSleepTimer();
           stateMachine.set(DeviceState::PLAYING);
           break;
 
@@ -249,8 +282,13 @@ void loop() {
             break;
           }
 
-          Player::PlayResult result = player.playPathOrFolder(filePath.c_str());
+          Nfc::PlaybackMode mode = nfcReader.currentMode();
+          PlaybackOptions options;
+          options.shuffle = mode.shuffle;
+          options.persistPosition = !(mode.shuffle || mode.autoSleepMinutes > 0);
+          Player::PlayResult result = player.playPathOrFolder(filePath.c_str(), options);
           nfcReader.rememberCurrentTag();
+          resetAutoSleepTimer();
           if (result != Player::PlayResult::Started) {
             board.setLED(RGB_Error);
           }

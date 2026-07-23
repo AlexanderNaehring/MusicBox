@@ -18,6 +18,17 @@
 // than overshoots - doesn't need to be accurate, just a reasonable guess.
 #define PLAYER_FALLBACK_BYTES_PER_SECOND (96000 / 8)  // 96 kbit/s
 
+// shuffle: randomize the queue order once, at load time - playNext()/
+// playPrev() still just step through it, but in this fixed random order.
+// persistPosition: whether to save/resume playback position for this queue
+// at all. Off by default for shuffle (a saved index wouldn't line up with
+// the next shuffle's order) - callers should also turn it off for other
+// modes where resuming doesn't make sense (e.g. auto-sleep).
+struct PlaybackOptions {
+  bool shuffle = false;
+  bool persistPosition = true;
+};
+
 // Owns the playback queue, the ESP8266Audio decode pipeline, gain, and
 // playback-position persistence. Deliberately knows nothing about the device
 // state machine, the LED, NFC, or BLE: playNext()/playPrev()/playFirst()
@@ -30,7 +41,7 @@ class Player {
   enum class PlayResult { Started, OpenFailed, NothingToPlay };
   // Loads `path` (a single .mp3 file or a folder of them) into the queue,
   // replacing whatever was there, and starts playback.
-  PlayResult playPathOrFolder(const char* path);
+  PlayResult playPathOrFolder(const char* path, PlaybackOptions options = PlaybackOptions());
 
   // Each returns false if there was nothing (more) to play - the queue is
   // now empty or exhausted.
@@ -105,6 +116,7 @@ class Player {
   uint32_t resumePosition_ = 0;
   unsigned long lastPositionSaveMillis_ = 0;
   int64_t gain_ = 0;
+  bool persistEnabled_ = true;
 
   // bitrate calibration for seekBySeconds(), refreshed in update(). 
   // Reset whenever a new track starts; NOT reset by seekBySeconds() itself

@@ -1,5 +1,7 @@
 #include "Nfc.h"
 
+#include <ArduinoJson.h>
+
 #include "Board.h"
 
 #define LOG_TAG "Nfc"
@@ -9,6 +11,21 @@
 Nfc nfcReader;
 
 Nfc::Nfc() : mfrc522_(RFID_CS, UINT8_MAX, spi_rfid), nfc_(&mfrc522_) {}
+
+// Decodes a tag's second NDEF record (same plain-text record format as the
+// path) as a small JSON object of mode overrides, e.g.
+// {"shuffle": true, "autoSleepMinutes": 30}. Missing fields keep `mode`'s
+// defaults; a malformed document is logged and otherwise ignored, not fatal.
+static void parsePlaybackMode(const String& text, Nfc::PlaybackMode& mode) {
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, text);
+  if (error) {
+    LOGF("Failed to parse playback mode JSON '%s': %s\n", text.c_str(), error.c_str());
+    return;
+  }
+  mode.shuffle = doc["shuffle"] | false;
+  mode.autoSleepMinutes = doc["autoSleepMinutes"] | 0;
+}
 
 bool Nfc::begin() {
   LOGLN("RFID...");
@@ -91,5 +108,25 @@ Nfc::PollResult Nfc::poll(unsigned long now, String& outPath) {
   LOGF("Path: %s\n", filePath.c_str());
 
   outPath = filePath;
+
+  currentMode_ = PlaybackMode();
+  if (message.getRecordCount() > 1) {
+    NdefRecord modeRecord = message.getRecord(1);
+    if (modeRecord.getTnf() == NdefRecord::TNF::TNF_WELL_KNOWN && modeRecord.getTypeLength() == 1 &&
+        ((char*)modeRecord.getType())[0] == 'T') {
+      int modePayloadLength = modeRecord.getPayloadLength();
+      const byte* modePayload = modeRecord.getPayload();
+      int modeLanguageLen = (int)modePayload[0];
+      String modeText = "";
+      for (int c = 1 + modeLanguageLen; c < modePayloadLength; c++) {
+        modeText += (char)modePayload[c];
+      }
+      LOGF("Mode: %s\n", modeText.c_str());
+      parsePlaybackMode(modeText, currentMode_);
+    } else {
+      LOGLN("NDEF mode record present but not a plain text record, ignoring");
+    }
+  }
+
   return PollResult::NewTagPath;
 }

@@ -1,6 +1,7 @@
 #ifndef MUSICBOX_BATTERY_H
 #define MUSICBOX_BATTERY_H
 
+#include <cstdint>
 #include <functional>
 
 // Normal: nothing to report. Low: past the warning threshold, recovers with

@@ -147,18 +147,25 @@ def render_index_html(entries: list[FolderEntry]) -> str:
         </li>""")
 
         folder_blocks.append(f"""
-    <details class="folder" open>
-      <summary>
+    <div class="folder">
+      <div class="folder-header">
         <span class="folder-path">{escape(entry.url_path)}</span>
         <span class="folder-count">{len(entry.files)} track(s)</span>
-      </summary>
+      </div>
       <button class="write-btn write-btn-folder"
-              onclick="writeTag('{escape(entry.url_path, quote=True)}', this)">
+              onclick="writeFolderTag('{escape(entry.url_path, quote=True)}', this, this.closest('.folder'))">
         Write tag for whole folder
       </button>
-      <ul class="track-list">{"".join(track_rows)}
-      </ul>
-    </details>""")
+      <div class="mode-controls">
+        <label><input type="checkbox" class="shuffle-checkbox"> Shuffle</label>
+        <label>Auto-sleep (minutes): <input type="number" class="autosleep-input" min="0" step="1" placeholder="0"></label>
+      </div>
+      <details class="track-details">
+        <summary>Tracks</summary>
+        <ul class="track-list">{"".join(track_rows)}
+        </ul>
+      </details>
+    </div>""")
 
     folders_html = "".join(folder_blocks) or '<p class="empty">No MP3 files found yet. Add some to the content root and re-run "generate".</p>'
 
@@ -196,15 +203,35 @@ def render_index_html(entries: list[FolderEntry]) -> str:
     margin-bottom: 10px;
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
   }}
-  .folder summary {{
+  .folder-header {{
     display: flex;
     justify-content: space-between;
     align-items: center;
-    cursor: pointer;
     font-weight: 600;
     padding: 4px 0;
   }}
   .folder-count {{ color: #888; font-weight: 400; font-size: 0.85em; }}
+  .mode-controls {{
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    margin: 8px 0 2px;
+    font-size: 0.85em;
+    color: #444;
+  }}
+  .mode-controls input[type="number"] {{
+    width: 60px;
+    padding: 4px 6px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+  }}
+  .track-details summary {{
+    cursor: pointer;
+    color: #667eea;
+    font-size: 0.85em;
+    padding: 6px 0;
+  }}
   .track-list {{ list-style: none; padding: 0; margin: 8px 0 4px; }}
   .track {{
     display: flex;
@@ -252,7 +279,7 @@ def render_index_html(entries: list[FolderEntry]) -> str:
     document.getElementById('unsupported-warning').style.display = 'block';
   }}
 
-  async function writeTag(path, btn) {{
+  async function performWrite(records, btn) {{
     if (!('NDEFReader' in window)) {{
       alert('Web NFC is not supported in this browser. Use Chrome for Android.');
       return;
@@ -262,14 +289,34 @@ def render_index_html(entries: list[FolderEntry]) -> str:
       const ndef = new NDEFReader();
       btn.disabled = true;
       btn.textContent = 'Hold phone to tag...';
-      await ndef.write({{ records: [{{ recordType: 'text', data: path }}] }});
-      btn.textContent = 'Tag written: ' + path;
+      await ndef.write({{ records }});
+      btn.textContent = 'Tag written';
       setTimeout(() => {{ btn.textContent = originalLabel; btn.disabled = false; }}, 2500);
     }} catch (err) {{
       alert('Failed to write NFC tag: ' + err);
       btn.textContent = originalLabel;
       btn.disabled = false;
     }}
+  }}
+
+  function writeTag(path, btn) {{
+    return performWrite([{{ recordType: 'text', data: path }}], btn);
+  }}
+
+  // Adds a 2nd NDEF record with a JSON mode object (matching Nfc::PlaybackMode
+  // in the firmware) when shuffle and/or auto-sleep is set for this folder -
+  // otherwise the tag is written exactly like a plain path (1 record).
+  function writeFolderTag(path, btn, folderEl) {{
+    const records = [{{ recordType: 'text', data: path }}];
+    const shuffle = folderEl.querySelector('.shuffle-checkbox').checked;
+    const autoSleepMinutes = parseInt(folderEl.querySelector('.autosleep-input').value, 10) || 0;
+    if (shuffle || autoSleepMinutes > 0) {{
+      const mode = {{}};
+      if (shuffle) mode.shuffle = true;
+      if (autoSleepMinutes > 0) mode.autoSleepMinutes = autoSleepMinutes;
+      records.push({{ recordType: 'text', data: JSON.stringify(mode) }});
+    }}
+    return performWrite(records, btn);
   }}
 </script>
 </body>

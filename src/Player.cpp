@@ -1,5 +1,7 @@
 #include "Player.h"
 
+#include <esp_random.h>
+
 #include <algorithm>
 
 #include "Config.h"
@@ -111,6 +113,7 @@ void Player::addFolderToQueue(fs::File root) {
 }
 
 void Player::persistPosition(int64_t trackIdx, int64_t position) {
+  if (!persistEnabled_) return;
   if (!(currentFolder_ && strlen(currentFolder_) > 0 && lastTrackFile_ && strlen(lastTrackFile_) > 0)) {
     return;
   }
@@ -267,9 +270,10 @@ Player::SeekResult Player::seekBySeconds(int32_t deltaSeconds) {
   return result;
 }
 
-Player::PlayResult Player::playPathOrFolder(const char* path) {
+Player::PlayResult Player::playPathOrFolder(const char* path, PlaybackOptions options) {
   LOGF("playPathOrFolder(%s)\n", path);
   stop();
+  persistEnabled_ = options.persistPosition;
   int lastTrack = -1;
 
   File root = fs_->open(path);
@@ -290,7 +294,7 @@ Player::PlayResult Player::playPathOrFolder(const char* path) {
 
     int64_t savedTrackIdx = 0;
     int64_t savedPosition = 0;
-    if (loadPersistedPosition(savedTrackIdx, savedPosition)) {
+    if (persistEnabled_ && loadPersistedPosition(savedTrackIdx, savedPosition)) {
       lastTrack = (int)savedTrackIdx;
       resumePosition_ = (uint32_t)savedPosition;
     }
@@ -306,6 +310,14 @@ Player::PlayResult Player::playPathOrFolder(const char* path) {
 
   auto cstrCompare = [](const char* s1, const char* s2) { return strcmp(s1, s2) < 0; };
   std::sort(files_.begin(), files_.end(), cstrCompare);
+  if (options.shuffle && files_.size() > 1) {
+    // Fisher-Yates using the ESP32's hardware RNG - no seeding needed
+    for (size_t i = files_.size() - 1; i > 0; i--) {
+      size_t j = esp_random() % (i + 1);
+      std::swap(files_[i], files_[j]);
+    }
+    LOGLN("Shuffled queue");
+  }
   LOGF("Queue:\n");
   for (auto x : files_) {
     LOGF("  %s\n", x);

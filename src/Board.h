@@ -52,6 +52,7 @@
 #define RGB_Play 0, 200, 0
 #define RGB_Pause 200, 200, 0
 #define RGB_LowBattery 200, 80, 0
+#define RGB_SleepExpired 199, 21, 133
 
 // SPI buses
 extern SPIClass spi_sd;
