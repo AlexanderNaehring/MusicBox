@@ -6,6 +6,8 @@
 
 #include "Board.h"
 
+#define LOG_TAG "WifiDownloader"
+
 #ifndef WIFI_SSID
 #define WIFI_SSID "<please set your SSID>"
 #define WIFI_PASSWORD "<please set your Wifi password>"
@@ -112,17 +114,6 @@ static void deleteRecursive(fs::FS& fs, const String& path) {
   }
 }
 
-// Wipes the entire download cache tree, not just one target's subtree. A completed
-// attempt (success or failure) always empties its own cache subtree before
-// returning, so anything still sitting under DOWNLOAD_CACHE_DIR when a new download
-// is about to start can only be garbage from an attempt that never got to finish -
-// e.g. power was lost mid-download. Safe to call even if nothing needs cleaning.
-static void cleanupDownloadCache(fs::FS& fs) {
-  if (!fs.exists(DOWNLOAD_CACHE_DIR)) return;
-  Serial.println("MusicBoxWifiDownloader: sweeping stale download cache...");
-  deleteRecursive(fs, DOWNLOAD_CACHE_DIR);
-}
-
 // SD's mkdir() only creates a single directory level and fails if its parent doesn't
 // exist yet, so nested cache/target paths need each intermediate directory created in
 // order.
@@ -133,13 +124,13 @@ static bool mkdirRecursive(fs::FS& fs, const String& path) {
   while ((idx = path.indexOf('/', start)) != -1) {
     String segment = path.substring(0, idx);
     if (segment.length() > 0 && !fs.exists(segment) && !fs.mkdir(segment)) {
-      Serial.printf("mkdirRecursive: failed to create '%s'\n", segment.c_str());
+      LOGF("mkdirRecursive: failed to create '%s'\n", segment.c_str());
       return false;
     }
     start = idx + 1;
   }
   if (!fs.exists(path) && !fs.mkdir(path)) {
-    Serial.printf("mkdirRecursive: failed to create '%s'\n", path.c_str());
+    LOGF("mkdirRecursive: failed to create '%s'\n", path.c_str());
     return false;
   }
   return true;
@@ -148,22 +139,21 @@ static bool mkdirRecursive(fs::FS& fs, const String& path) {
 // ---- WiFi lifecycle -------------------------------------------------------------------
 
 static bool connectWifi() {
-  Serial.printf("MusicBoxWifiDownloader: connecting to WiFi SSID '%s'...\n", WIFI_SSID);
+  LOGF("connecting to WiFi SSID '%s'...\n", WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long start = millis();
   while (WiFi.status() != WL_CONNECTED) {
     if (millis() - start > WIFI_CONNECT_TIMEOUT_MS) {
-      Serial.println("MusicBoxWifiDownloader: WiFi connection timed out");
+      LOGLN("WiFi connection timed out");
       WiFi.disconnect(true);
       WiFi.mode(WIFI_OFF);
       return false;
     }
     delay(100);
   }
-  Serial.printf("MusicBoxWifiDownloader: WiFi connected, IP %s\n",
-                WiFi.localIP().toString().c_str());
+  LOGF("WiFi connected, IP %s\n", WiFi.localIP().toString().c_str());
 
   // ESP32 WiFi defaults to modem-sleep power saving, which periodically naps the
   // radio between beacon intervals - fine for idle standby, but it measurably
@@ -175,7 +165,7 @@ static bool connectWifi() {
 }
 
 static void disconnectWifi() {
-  Serial.println("MusicBoxWifiDownloader: disconnecting WiFi...");
+  LOGLN("disconnecting WiFi...");
   WiFi.disconnect(true);
   WiFi.mode(WIFI_OFF);
 }
@@ -184,34 +174,74 @@ static void disconnectWifi() {
 
 // Downloads `url` to `localPath`, verifying the number of bytes written against
 // `expectedSize` (or, if 0, against the response's Content-Length header - at least one
-// of the two must be known, otherwise the download is rejected). Leaves no partial file
-// behind on failure, and gives up if no data arrives for a while (possible WiFi drop).
+// of the two must be known, otherwise the download is rejected). Gives up if no data
+// arrives for a while (possible WiFi drop).
+//
+// Resume (only when `expectedSize` is known, i.e. the manifest/folder path): if
+// `localPath` already has some but not all of `expectedSize` on disk, this asks the
+// server for just the remaining bytes (HTTP Range) and appends, instead of
+// redownloading the whole file - the point of it, for a large single-file audiobook
+// that fails partway through. If the server ignores the Range header (not all static
+// hosts support it) and sends the full body from byte 0 instead, it falls back to a
+// full restart automatically. On failure, the partial file is kept (not deleted) so a
+// later retry can resume from it; only a caller that never resumes (expectedSize == 0)
+// gets today's delete-on-failure behavior, since it has no way to make use of it.
 static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& localPath,
                                size_t expectedSize) {
-  Serial.printf("MusicBoxWifiDownloader: downloading '%s' -> '%s'\n", url.c_str(),
-                localPath.c_str());
+  size_t existingSize = 0;
+  if (fs.exists(localPath)) {
+    File existing = fs.open(localPath);
+    if (existing) {
+      existingSize = existing.size();
+      existing.close();
+    }
+  }
+
+  if (expectedSize > 0 && existingSize == expectedSize) {
+    LOGF("'%s' already complete, skipping\n", localPath.c_str());
+    return true;
+  }
+  // Bigger than expected shouldn't happen (a complete file is caught above, and
+  // httpDownloadToFile never writes past expectedSize) - but if it does, e.g. a
+  // manifest changed size for the same name, treat it as corrupt and start over.
+  if (expectedSize > 0 && existingSize > expectedSize) existingSize = 0;
+
+  bool resume = expectedSize > 0 && existingSize > 0;
+
+  LOGF("%s '%s' -> '%s'\n", resume ? "resuming" : "downloading", url.c_str(),
+       localPath.c_str());
 
   HTTPClient http;
   if (!http.begin(url)) {
-    Serial.printf("MusicBoxWifiDownloader: failed to begin request for '%s'\n", url.c_str());
+    LOGF("failed to begin request for '%s'\n", url.c_str());
     return false;
+  }
+  if (resume) {
+    http.addHeader("Range", "bytes=" + String(existingSize) + "-");
   }
 
   int httpCode = http.GET();
-  if (httpCode != HTTP_CODE_OK) {
-    Serial.printf("MusicBoxWifiDownloader: GET '%s' failed, HTTP code %d\n", url.c_str(), httpCode);
+  if (resume && httpCode == HTTP_CODE_OK) {
+    // Server ignored the Range request and is sending the whole file from byte 0 -
+    // falling back to a full restart is the only safe option (appending it after our
+    // existing bytes would corrupt the file).
+    LOGLN("server ignored Range request, restarting from scratch");
+    resume = false;
+    existingSize = 0;
+  } else if (httpCode != HTTP_CODE_OK && httpCode != 206 /* Partial Content */) {
+    LOGF("GET '%s' failed, HTTP code %d\n", url.c_str(), httpCode);
     http.end();
     return false;
   }
 
-  int contentLength = http.getSize();
+  int contentLength = http.getSize();  // bytes remaining in *this* response only
   size_t targetSize = expectedSize > 0      ? expectedSize
-                      : (contentLength > 0) ? (size_t)contentLength
+                      : (contentLength > 0) ? (size_t)(existingSize + contentLength)
                                             : 0;
 
-  File outFile = fs.open(localPath, FILE_WRITE);
+  File outFile = fs.open(localPath, resume ? FILE_APPEND : FILE_WRITE);
   if (!outFile) {
-    Serial.printf("MusicBoxWifiDownloader: failed to open '%s' for writing\n", localPath.c_str());
+    LOGF("failed to open '%s' for writing\n", localPath.c_str());
     http.end();
     return false;
   }
@@ -221,15 +251,16 @@ static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& loca
 
   auto* stream = http.getStreamPtr();
   static uint8_t buf[DOWNLOAD_READ_BUFFER_SIZE];  // static: keep it off the stack
-  size_t totalWritten = 0;
+  size_t totalWritten = existingSize;             // overall file size, for progress/verification
+  size_t sessionWritten = 0;                      // bytes received in this response only
   unsigned long lastDataMillis = millis();
   int lastReportedPercent = -5;  // so 0% still gets printed on first progress
   uint8_t rainbowStep = 0;
 
-  while (http.connected() && (contentLength <= 0 || totalWritten < (size_t)contentLength)) {
+  while (http.connected() && (contentLength <= 0 || sessionWritten < (size_t)contentLength)) {
     size_t toRead = sizeof(buf);
     if (contentLength > 0) {
-      size_t remaining = (size_t)contentLength - totalWritten;
+      size_t remaining = (size_t)contentLength - sessionWritten;
       if (remaining < toRead) toRead = remaining;
     }
     // readBytes() does an efficient bulk read of whatever has arrived (up to
@@ -240,6 +271,7 @@ static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& loca
     if (readBytes > 0) {
       outFile.write(buf, readBytes);
       totalWritten += readBytes;
+      sessionWritten += readBytes;
       lastDataMillis = millis();
 
       // Only advances on actual data arrival, so the color freezes in place
@@ -253,13 +285,13 @@ static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& loca
         int percentBucket = (percent / 5) * 5;
         if (percentBucket > lastReportedPercent) {
           lastReportedPercent = percentBucket;
-          Serial.printf("MusicBoxWifiDownloader: %s - %d%% (%u/%u bytes)\n", localPath.c_str(),
-                        percentBucket, (unsigned)totalWritten, (unsigned)targetSize);
+          LOGF("%s - %d%% (%u/%u bytes)\n", localPath.c_str(), percentBucket,
+               (unsigned)totalWritten, (unsigned)targetSize);
         }
       }
     } else {
       if (millis() - lastDataMillis > DOWNLOAD_STALL_TIMEOUT_MS) {
-        Serial.printf("MusicBoxWifiDownloader: download stalled, aborting '%s'\n", url.c_str());
+        LOGF("download stalled, aborting '%s'\n", url.c_str());
         board.setLED(RGB_Error);
         break;
       }
@@ -270,13 +302,16 @@ static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& loca
   outFile.close();
   http.end();
 
-  Serial.printf("MusicBoxWifiDownloader: wrote %u bytes (expected %u) for '%s'\n",
-                (unsigned)totalWritten, (unsigned)targetSize, localPath.c_str());
+  LOGF("wrote %u bytes (expected %u) for '%s'\n", (unsigned)totalWritten, (unsigned)targetSize,
+       localPath.c_str());
 
   if (targetSize == 0 || totalWritten != targetSize) {
-    Serial.printf("MusicBoxWifiDownloader: incomplete/unverified download, removing '%s'\n",
-                  localPath.c_str());
-    fs.remove(localPath);
+    if (expectedSize > 0) {
+      LOGF("incomplete download, keeping '%s' to resume later\n", localPath.c_str());
+    } else {
+      LOGF("incomplete/unverified download, removing '%s'\n", localPath.c_str());
+      fs.remove(localPath);
+    }
     return false;
   }
 
@@ -303,29 +338,28 @@ static bool downloadFile(fs::FS& fs, const String& remotePath) {
   }
   if (fs.exists(remotePath)) deleteRecursive(fs, remotePath);
   if (!fs.rename(cachePath, remotePath)) {
-    Serial.printf("MusicBoxWifiDownloader: failed to move '%s' to '%s'\n", cachePath.c_str(),
-                  remotePath.c_str());
+    LOGF("failed to move '%s' to '%s'\n", cachePath.c_str(), remotePath.c_str());
     deleteRecursive(fs, cachePath);
     return false;
   }
 
-  Serial.printf("MusicBoxWifiDownloader: '%s' ready\n", remotePath.c_str());
+  LOGF("'%s' ready\n", remotePath.c_str());
   return true;
 }
 
 static bool downloadFolder(fs::FS& fs, const String& remotePath) {
   String manifestUrl =
       String(DOWNLOAD_BASE_URL) + urlEncodePath(remotePath) + "/" + DOWNLOAD_MANIFEST_NAME;
-  Serial.printf("MusicBoxWifiDownloader: fetching manifest '%s'\n", manifestUrl.c_str());
+  LOGF("fetching manifest '%s'\n", manifestUrl.c_str());
 
   HTTPClient http;
   if (!http.begin(manifestUrl)) {
-    Serial.println("MusicBoxWifiDownloader: failed to begin manifest request");
+    LOGLN("failed to begin manifest request");
     return false;
   }
   int httpCode = http.GET();
   if (httpCode != HTTP_CODE_OK) {
-    Serial.printf("MusicBoxWifiDownloader: manifest GET failed, HTTP code %d\n", httpCode);
+    LOGF("manifest GET failed, HTTP code %d\n", httpCode);
     http.end();
     return false;
   }
@@ -335,27 +369,51 @@ static bool downloadFolder(fs::FS& fs, const String& remotePath) {
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, manifestBody);
   if (err) {
-    Serial.printf("MusicBoxWifiDownloader: failed to parse manifest: %s\n", err.c_str());
+    LOGF("failed to parse manifest: %s\n", err.c_str());
     return false;
   }
 
   JsonArray filesArray = doc["files"].as<JsonArray>();
   if (filesArray.isNull() || filesArray.size() == 0) {
-    Serial.println("MusicBoxWifiDownloader: manifest has no files listed");
+    LOGLN("manifest has no files listed");
     return false;
   }
-  Serial.printf("MusicBoxWifiDownloader: manifest lists %u file(s)\n", (unsigned)filesArray.size());
+  LOGF("manifest lists %u file(s)\n", (unsigned)filesArray.size());
 
   String cachePath = String(DOWNLOAD_CACHE_DIR) + remotePath;
-  deleteRecursive(fs, cachePath);
-  if (!mkdirRecursive(fs, cachePath)) return false;
+  String cacheManifestPath = cachePath + "/" + DOWNLOAD_MANIFEST_NAME;
+
+  // A cache subtree left over from a previous attempt is only safe to resume from if
+  // it was downloading the exact same manifest - otherwise the folder's contents
+  // changed on the server and any partial files in there could be stale/mismatched.
+  String cachedManifest;
+  File cacheManifestFile = fs.open(cacheManifestPath);
+  bool haveCachedManifest = (bool)cacheManifestFile;
+  if (haveCachedManifest) {
+    cachedManifest = cacheManifestFile.readString();
+    cacheManifestFile.close();
+  }
+
+  if (haveCachedManifest && cachedManifest == manifestBody) {
+    LOGF("resuming previous download of '%s'\n", remotePath.c_str());
+  } else {
+    LOGF("starting fresh download of '%s'\n", remotePath.c_str());
+    deleteRecursive(fs, cachePath);
+    if (!mkdirRecursive(fs, cachePath)) return false;
+    File manifestFile = fs.open(cacheManifestPath, FILE_WRITE);
+    if (!manifestFile) {
+      LOGF("failed to write cache manifest for '%s'\n", remotePath.c_str());
+      return false;
+    }
+    manifestFile.print(manifestBody);
+    manifestFile.close();
+  }
 
   for (JsonObject entry : filesArray) {
     const char* name = entry["name"];
     size_t size = entry["size"] | 0;
     if (!name || name[0] == '\0') {
-      Serial.println("MusicBoxWifiDownloader: manifest entry missing 'name', aborting");
-      deleteRecursive(fs, cachePath);
+      LOGLN("manifest entry missing 'name', aborting");
       return false;
     }
 
@@ -363,29 +421,27 @@ static bool downloadFolder(fs::FS& fs, const String& remotePath) {
         String(DOWNLOAD_BASE_URL) + urlEncodePath(remotePath) + "/" + urlEncodePath(name);
     String fileCachePath = cachePath + "/" + name;
 
+    // On failure, the cache subtree (including whatever files already completed, and
+    // the manifest we just wrote/matched above) is deliberately left in place - a
+    // later retry resumes from here instead of starting over.
     if (!httpDownloadToFile(fs, fileUrl, fileCachePath, size)) {
-      Serial.printf("MusicBoxWifiDownloader: failed to download '%s', aborting folder download\n",
-                    name);
-      deleteRecursive(fs, cachePath);
+      LOGF("failed to download '%s', will resume later\n", name);
       return false;
     }
   }
 
-  // Every listed file is confirmed complete on disk - only now make it visible for playback.
-  if (!mkdirRecursive(fs, parentPath(remotePath))) {
-    deleteRecursive(fs, cachePath);
-    return false;
-  }
+  // Every listed file is confirmed complete on disk - only now make it visible for
+  // playback. manifest.json rides along into the final folder too (harmless -
+  // Player only picks up .mp3 files), which doubles as a locally-persisted record of
+  // what's actually in there, in case that's useful later.
+  if (!mkdirRecursive(fs, parentPath(remotePath))) return false;
   if (fs.exists(remotePath)) deleteRecursive(fs, remotePath);
   if (!fs.rename(cachePath, remotePath)) {
-    Serial.printf("MusicBoxWifiDownloader: failed to move '%s' to '%s'\n", cachePath.c_str(),
-                  remotePath.c_str());
-    deleteRecursive(fs, cachePath);
+    LOGF("failed to move '%s' to '%s'\n", cachePath.c_str(), remotePath.c_str());
     return false;
   }
 
-  Serial.printf("MusicBoxWifiDownloader: '%s' ready with %u file(s)\n", remotePath.c_str(),
-                (unsigned)filesArray.size());
+  LOGF("'%s' ready with %u file(s)\n", remotePath.c_str(), (unsigned)filesArray.size());
   return true;
 }
 
@@ -396,9 +452,7 @@ bool ensureContentAvailable(fs::FS& fs, const char* path) {
     return true;
   }
 
-  Serial.printf("MusicBoxWifiDownloader: '%s' not found locally, attempting WiFi download\n", path);
-
-  cleanupDownloadCache(fs);
+  LOGF("'%s' not found locally, attempting WiFi download\n", path);
 
   if (!connectWifi()) {
     board.playCue(fs, SOUND_DOWNLOAD_FAILED);
