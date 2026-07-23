@@ -6,11 +6,11 @@
 // of only main.cpp knowing about them.
 
 #define DEBUG true
-#define HW_REV 2
+#define HW_REV 1
 #define BLE false
 #define WIFI false
 #define WIFI_DOWNLOAD true
-#define AllowSleep true
+#define AllowSleep false
 
 // Debug logging: each .cpp defines LOG_TAG (its own file name, as a plain
 // string literal) before using these, so every Serial line can be traced
