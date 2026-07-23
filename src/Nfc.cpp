@@ -14,8 +14,9 @@ Nfc::Nfc() : mfrc522_(RFID_CS, UINT8_MAX, spi_rfid), nfc_(&mfrc522_) {}
 
 // Decodes a tag's second NDEF record (same plain-text record format as the
 // path) as a small JSON object of mode overrides, e.g.
-// {"shuffle": true, "autoSleepMinutes": 30}. Missing fields keep `mode`'s
-// defaults; a malformed document is logged and otherwise ignored, not fatal.
+// {"shuffle": true, "autoSleepMinutes": 30, "baseUrl": "http://host:port"}.
+// Missing fields keep `mode`'s defaults; a malformed document is logged and
+// otherwise ignored, not fatal.
 static void parsePlaybackMode(const String& text, Nfc::PlaybackMode& mode) {
   JsonDocument doc;
   DeserializationError error = deserializeJson(doc, text);
@@ -25,6 +26,7 @@ static void parsePlaybackMode(const String& text, Nfc::PlaybackMode& mode) {
   }
   mode.shuffle = doc["shuffle"] | false;
   mode.autoSleepMinutes = doc["autoSleepMinutes"] | 0;
+  mode.baseUrl = doc["baseUrl"] | "";
 }
 
 bool Nfc::begin() {

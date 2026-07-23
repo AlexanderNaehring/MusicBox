@@ -37,6 +37,10 @@ class Nfc {
   struct PlaybackMode {
     bool shuffle = false;
     uint16_t autoSleepMinutes = 0;  // 0 = disabled
+    // Overrides DOWNLOAD_BASE_URL for this tag's WiFi download, if non-empty -
+    // the tag-writer page's base URL is usually more current than the
+    // firmware's compiled-in default (see MusicBoxWifiDownloader.h).
+    String baseUrl;
   };
   PlaybackMode currentMode() const { return currentMode_; }
 

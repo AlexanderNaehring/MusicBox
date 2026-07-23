@@ -272,9 +272,11 @@ void loop() {
           break;
 
         case Nfc::PollResult::NewTagPath: {
+          Nfc::PlaybackMode mode = nfcReader.currentMode();
+
           bool contentReady = true;
 #if WIFI_DOWNLOAD
-          contentReady = ensureContentAvailable(SD, filePath.c_str());
+          contentReady = ensureContentAvailable(SD, filePath.c_str(), mode.baseUrl.c_str());
 #endif
           if (!contentReady) {
             LOGF("Content unavailable for '%s'\n", filePath.c_str());
@@ -282,7 +284,6 @@ void loop() {
             break;
           }
 
-          Nfc::PlaybackMode mode = nfcReader.currentMode();
           PlaybackOptions options;
           options.shuffle = mode.shuffle;
           options.persistPosition = !(mode.shuffle || mode.autoSleepMinutes > 0);

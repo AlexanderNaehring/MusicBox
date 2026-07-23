@@ -232,6 +232,26 @@ def render_index_html(entries: list[FolderEntry]) -> str:
     font-size: 0.85em;
     padding: 6px 0;
   }}
+  .base-url-row {{
+    background: white;
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+  }}
+  .base-url-row label {{
+    display: block;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }}
+  .base-url-row input[type="text"] {{
+    width: 100%;
+    padding: 8px 10px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 0.9em;
+  }}
+  .base-url-row .hint {{ color: #888; font-size: 0.8em; margin: 6px 0 0; }}
   .track-list {{ list-style: none; padding: 0; margin: 8px 0 4px; }}
   .track {{
     display: flex;
@@ -269,6 +289,15 @@ def render_index_html(entries: list[FolderEntry]) -> str:
     This browser doesn't support Web NFC. Open this page in Chrome for Android.
   </div>
 
+  <div class="base-url-row">
+    <label for="base-url-override">Server base URL override</label>
+    <input type="text" id="base-url-override"
+           placeholder="leave blank for firmware default">
+    <p class="hint">
+      Written onto every tag as download location, overwrites firmware default.
+    </p>
+  </div>
+
   {folders_html}
 
 <script>
@@ -278,6 +307,13 @@ def render_index_html(entries: list[FolderEntry]) -> str:
   if (!('NDEFReader' in window)) {{
     document.getElementById('unsupported-warning').style.display = 'block';
   }}
+
+  const BASE_URL_STORAGE_KEY = 'musicbox-base-url-override';
+  const baseUrlInput = document.getElementById('base-url-override');
+  baseUrlInput.value = localStorage.getItem(BASE_URL_STORAGE_KEY) || '';
+  baseUrlInput.addEventListener('input', () => {{
+    localStorage.setItem(BASE_URL_STORAGE_KEY, baseUrlInput.value.trim());
+  }});
 
   async function performWrite(records, btn) {{
     if (!('NDEFReader' in window)) {{
@@ -299,23 +335,33 @@ def render_index_html(entries: list[FolderEntry]) -> str:
     }}
   }}
 
-  function writeTag(path, btn) {{
-    return performWrite([{{ recordType: 'text', data: path }}], btn);
+  // Builds the optional 2nd NDEF record (a JSON object matching
+  // Nfc::PlaybackMode in the firmware) from shuffle/auto-sleep (folder writes
+  // only) and the shared base URL override (every write) - null if none of
+  // those are set, so a plain tag stays a single record like before.
+  function buildModeRecord({{ shuffle = false, autoSleepMinutes = 0 }} = {{}}) {{
+    const baseUrl = baseUrlInput.value.trim();
+    if (!shuffle && autoSleepMinutes <= 0 && !baseUrl) return null;
+    const mode = {{}};
+    if (shuffle) mode.shuffle = true;
+    if (autoSleepMinutes > 0) mode.autoSleepMinutes = autoSleepMinutes;
+    if (baseUrl) mode.baseUrl = baseUrl;
+    return {{ recordType: 'text', data: JSON.stringify(mode) }};
   }}
 
-  // Adds a 2nd NDEF record with a JSON mode object (matching Nfc::PlaybackMode
-  // in the firmware) when shuffle and/or auto-sleep is set for this folder -
-  // otherwise the tag is written exactly like a plain path (1 record).
-  function writeFolderTag(path, btn, folderEl) {{
+  function writeTag(path, btn) {{
     const records = [{{ recordType: 'text', data: path }}];
+    const modeRecord = buildModeRecord();
+    if (modeRecord) records.push(modeRecord);
+    return performWrite(records, btn);
+  }}
+
+  function writeFolderTag(path, btn, folderEl) {{
     const shuffle = folderEl.querySelector('.shuffle-checkbox').checked;
     const autoSleepMinutes = parseInt(folderEl.querySelector('.autosleep-input').value, 10) || 0;
-    if (shuffle || autoSleepMinutes > 0) {{
-      const mode = {{}};
-      if (shuffle) mode.shuffle = true;
-      if (autoSleepMinutes > 0) mode.autoSleepMinutes = autoSleepMinutes;
-      records.push({{ recordType: 'text', data: JSON.stringify(mode) }});
-    }}
+    const records = [{{ recordType: 'text', data: path }}];
+    const modeRecord = buildModeRecord({{ shuffle, autoSleepMinutes }});
+    if (modeRecord) records.push(modeRecord);
     return performWrite(records, btn);
   }}
 </script>

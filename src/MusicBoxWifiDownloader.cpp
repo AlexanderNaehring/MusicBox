@@ -320,8 +320,8 @@ static bool httpDownloadToFile(fs::FS& fs, const String& url, const String& loca
 
 // ---- single-file / folder downloads -------------------------------------------------
 
-static bool downloadFile(fs::FS& fs, const String& remotePath) {
-  String url = String(DOWNLOAD_BASE_URL) + urlEncodePath(remotePath);
+static bool downloadFile(fs::FS& fs, const String& remotePath, const String& baseUrl) {
+  String url = baseUrl + urlEncodePath(remotePath);
   String cachePath = String(DOWNLOAD_CACHE_DIR) + remotePath;
 
   deleteRecursive(fs, cachePath);
@@ -347,9 +347,8 @@ static bool downloadFile(fs::FS& fs, const String& remotePath) {
   return true;
 }
 
-static bool downloadFolder(fs::FS& fs, const String& remotePath) {
-  String manifestUrl =
-      String(DOWNLOAD_BASE_URL) + urlEncodePath(remotePath) + "/" + DOWNLOAD_MANIFEST_NAME;
+static bool downloadFolder(fs::FS& fs, const String& remotePath, const String& baseUrl) {
+  String manifestUrl = baseUrl + urlEncodePath(remotePath) + "/" + DOWNLOAD_MANIFEST_NAME;
   LOGF("fetching manifest '%s'\n", manifestUrl.c_str());
 
   HTTPClient http;
@@ -417,8 +416,7 @@ static bool downloadFolder(fs::FS& fs, const String& remotePath) {
       return false;
     }
 
-    String fileUrl =
-        String(DOWNLOAD_BASE_URL) + urlEncodePath(remotePath) + "/" + urlEncodePath(name);
+    String fileUrl = baseUrl + urlEncodePath(remotePath) + "/" + urlEncodePath(name);
     String fileCachePath = cachePath + "/" + name;
 
     // On failure, the cache subtree (including whatever files already completed, and
@@ -447,7 +445,7 @@ static bool downloadFolder(fs::FS& fs, const String& remotePath) {
 
 // ---- public entry point -------------------------------------------------------------
 
-bool ensureContentAvailable(fs::FS& fs, const char* path) {
+bool ensureContentAvailable(fs::FS& fs, const char* path, const char* baseUrl) {
   if (fs.exists(path)) {
     return true;
   }
@@ -462,7 +460,12 @@ bool ensureContentAvailable(fs::FS& fs, const char* path) {
   board.playCue(fs, SOUND_DOWNLOAD_START);
 
   String remotePath(path);
-  bool ok = isMp3Path(remotePath) ? downloadFile(fs, remotePath) : downloadFolder(fs, remotePath);
+  String effectiveBaseUrl = (baseUrl && baseUrl[0]) ? String(baseUrl) : String(DOWNLOAD_BASE_URL);
+  if (baseUrl && baseUrl[0]) {
+    LOGF("using tag-provided base URL '%s'\n", baseUrl);
+  }
+  bool ok = isMp3Path(remotePath) ? downloadFile(fs, remotePath, effectiveBaseUrl)
+                                  : downloadFolder(fs, remotePath, effectiveBaseUrl);
 
   board.playCue(fs, ok ? SOUND_DOWNLOAD_SUCCESS : SOUND_DOWNLOAD_FAILED);
 
