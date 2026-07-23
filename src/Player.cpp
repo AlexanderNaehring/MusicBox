@@ -3,13 +3,14 @@
 #include <esp_random.h>
 
 #include <algorithm>
+#include <cmath>
 
 #include "Config.h"
 
 #define LOG_TAG "Player"
 
 #define MinAudioGain 2
-#define MaxAudioGain 52
+#define MaxAudioGain 55
 #define InitialAudioGain 8
 #define AUDIO_SOURCE_BUFFER_SIZE 1024 * 4
 #define POSITION_SAVE_INTERVAL 30000  // 30 seconds
@@ -18,6 +19,11 @@
 #define PAUSE_GAP_THRESHOLD_MS 2000
 // Minimum accumulated actual playback time before trusting bitrate estimate
 #define MIN_CALIBRATION_MS 800
+
+// Calculate StepRatio to cover full range with equal ratios of gain per step:
+#define VOLUME_STEPS_FULL_RANGE 12
+static const double kVolumeStepRatio =
+    pow((double)MaxAudioGain / MinAudioGain, 1.0 / VOLUME_STEPS_FULL_RANGE);
 
 Player player;
 
@@ -36,7 +42,7 @@ void Player::begin(fs::FS& fs, AudioOutputI2S* output) {
   fs_ = &fs;
   output_ = output;
   mp3_ = new AudioGeneratorMP3();
-  setGainRaw(InitialAudioGain);
+  applyGain(InitialAudioGain);
 }
 
 void Player::reinitAudioSource() {
@@ -92,7 +98,7 @@ void Player::addFileToQueue(fs::File file) {
   }
   char* path = (char*)malloc((strlen(tmp) + 1) * sizeof(char));
   strcpy(path, file.path());
-  LOGF("Add to queue: %s\n", path);
+  // LOGF("Add to queue: %s\n", path);
   files_.push_back(path);
 }
 
@@ -318,10 +324,10 @@ Player::PlayResult Player::playPathOrFolder(const char* path, PlaybackOptions op
     }
     LOGLN("Shuffled queue");
   }
-  LOGF("Queue:\n");
-  for (auto x : files_) {
-    LOGF("  %s\n", x);
-  }
+  LOGF("Queue: %u\n", (unsigned)files_.size());
+  // for (auto x : files_) {
+  //   LOGF("  %s\n", x);
+  // }
   if (lastTrack >= 0 && lastTrack < (int)files_.size()) {
     LOGF("Jump to track %d\n", lastTrack);
     currentFile_ = lastTrack - 1;
@@ -337,10 +343,7 @@ Player::UpdateResult Player::update(unsigned long now) {
     return UpdateResult::StalledError;
   }
 
-  // Accumulate actual playback time (not wall-clock time since track start)
-  // so a paused stretch doesn't skew the bytes/sec estimate: a gap between
-  // ticks larger than PAUSE_GAP_THRESHOLD_MS means playback was paused in
-  // between and is simply not counted.
+  // Estimate bitrate
   unsigned long tickMillis = now - lastCalibrationMillis_;
   lastCalibrationMillis_ = now;
   if (tickMillis < PAUSE_GAP_THRESHOLD_MS) {
@@ -361,17 +364,19 @@ Player::UpdateResult Player::update(unsigned long now) {
   return UpdateResult::Playing;
 }
 
-int64_t Player::setGainRaw(int64_t gain) {
+double Player::applyGain(double gain) {
   if (gain < MinAudioGain) gain = MinAudioGain;
   if (gain > MaxAudioGain) gain = MaxAudioGain;
   gain_ = gain;
-  LOGF("Volume: %lld\n", (long long)gain_);
+  LOGF("Volume: %.2f\n", gain_);
   output_->SetGain(gain_ / 100.0);
   return gain_;
 }
 
-void Player::volumeUp() { setGainRaw(gain_ + 2); }
-void Player::volumeDown() { setGainRaw(gain_ - 2); }
+// Pure floating-point steps, so - unlike an integer gain_ - a ratio step
+// near the bottom of the range never rounds away to nothing.
+void Player::volumeUp() { applyGain(gain_ * kVolumeStepRatio); }
+void Player::volumeDown() { applyGain(gain_ / kVolumeStepRatio); }
 
 const char* Player::currentTrackPath() const {
   if (currentFile_ < 0 || currentFile_ >= (int)files_.size()) return "";

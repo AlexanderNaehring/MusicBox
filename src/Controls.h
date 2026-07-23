@@ -56,7 +56,6 @@ class Controls {
   bool bothHeldHandled_ = false;
 #elif HW_REV == 2
   ESP32Encoder rotaryGain_;
-  int64_t lastEncoderCount_ = 0;
 #endif
 };
 

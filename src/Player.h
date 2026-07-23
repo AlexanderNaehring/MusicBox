@@ -80,11 +80,7 @@ class Player {
 
   void volumeUp();
   void volumeDown();
-  // Clamps to the allowed gain range, applies it, and returns the value
-  // actually applied - so callers backed by their own hardware count (e.g. a
-  // rotary encoder) can resync to the clamped value.
-  int64_t setGainRaw(int64_t gain);
-  int64_t gain() const { return gain_; }
+  double gain() const { return gain_; }
 
   int currentIndex() const { return currentFile_; }
   size_t queueSize() const { return files_.size(); }
@@ -97,6 +93,7 @@ class Player {
   void addFolderToQueue(fs::File root);
   void persistPosition(int64_t trackIdx, int64_t position);
   bool loadPersistedPosition(int64_t& trackIdx, int64_t& position);
+  double applyGain(double gain);
 
   fs::FS* fs_ = nullptr;
   AudioOutputI2S* output_ = nullptr;
@@ -115,7 +112,7 @@ class Player {
   unsigned long lastPlayMillis_ = 0;
   uint32_t resumePosition_ = 0;
   unsigned long lastPositionSaveMillis_ = 0;
-  int64_t gain_ = 0;
+  double gain_ = 0;
   bool persistEnabled_ = true;
 
   // bitrate calibration for seekBySeconds(), refreshed in update(). 

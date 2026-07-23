@@ -3,6 +3,7 @@
 #define LOG_TAG "Controls"
 
 #define SEEK_STEP_SECONDS 120
+#define MAX_ENCODER_STEPS_PER_TICK 10
 
 Controls controls;
 
@@ -28,8 +29,7 @@ void Controls::begin(Player& player, PlayAttemptHandler onPlayAttempt) {
 
   ESP32Encoder::useInternalWeakPullResistors = puType::up;
   rotaryGain_.attachHalfQuad(RotaryA, RotaryB);
-  rotaryGain_.setCount(player_->gain());
-  lastEncoderCount_ = player_->gain();
+  rotaryGain_.clearCount();
 #endif
 }
 
@@ -55,13 +55,14 @@ void Controls::tick() {
   btnPrev_.tick();
 
 #if HW_REV == 2
-  int64_t count = rotaryGain_.getCount();
-  if (count != lastEncoderCount_) {
-    int64_t applied = player_->setGainRaw(count);
-    lastEncoderCount_ = applied;
-    rotaryGain_.clearCount();
-    rotaryGain_.setCount(applied);
-    LOGF("Set gain: %lld\n", (long long)applied);
+  int64_t delta = rotaryGain_.getCount();
+  rotaryGain_.clearCount();
+  if (delta > 0 && delta <= MAX_ENCODER_STEPS_PER_TICK) {
+    for (int64_t i = 0; i < delta; i++) player_->volumeUp();
+  } else if (delta < 0 && delta >= -MAX_ENCODER_STEPS_PER_TICK) {
+    for (int64_t i = 0; i > delta; i--) player_->volumeDown();
+  } else if (delta != 0) {
+    LOGF("Ignoring implausible encoder delta %lld\n", (long long)delta);
   }
 #endif
 }
